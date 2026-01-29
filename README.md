@@ -1,5 +1,4 @@
-cv
-# 🛡️ SentinTinel - AI-Powered Surveillance System
+# 🛡️ ThirdEye - AI-Powered Surveillance System
 
 An intelligent surveillance system powered by Google Gemini Live API with real-time video analysis, semantic context building using ChromaDB, and advanced pattern recognition.
 
