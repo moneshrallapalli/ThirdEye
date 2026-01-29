@@ -1,5 +1,5 @@
 """
-Configuration management for SentinTinel Surveillance System
+Configuration management for ThirdEye Intelligent Monitoring System
 """
 from pydantic_settings import BaseSettings
 from typing import Optional
@@ -10,7 +10,13 @@ class Settings(BaseSettings):
 
     # API Configuration
     GEMINI_API_KEY: str
+    CLAUDE_API_KEY: str  # Anthropic Claude API key for reasoning agent
     GOOGLE_PROJECT_ID: Optional[str] = None
+
+    # Email Configuration
+    RESEND_API_KEY: Optional[str] = None  # Resend - Recommended (excellent deliverability)
+    BREVO_API_KEY: Optional[str] = None   # Brevo - Alternative
+    EMAIL_RECIPIENT: str = "moneshralapalli@gmail.com"
 
     # Database Configuration
     POSTGRES_HOST: str = "localhost"
@@ -41,14 +47,16 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     # Camera Configuration
-    CAMERA_FPS: int = 2
+    CAMERA_FPS: float = 0.033  # 0.033 FPS = 1 frame every 30 seconds = 2 calls/min (within free tier rate limit)
     MAX_CAMERAS: int = 4
-    VIDEO_RESOLUTION_WIDTH: int = 1280
-    VIDEO_RESOLUTION_HEIGHT: int = 720
+    VIDEO_RESOLUTION_WIDTH: int = 640  # Reduced for faster processing
+    VIDEO_RESOLUTION_HEIGHT: int = 480  # Reduced for faster processing
 
     # Alert Thresholds
     CRITICAL_THRESHOLD: int = 80
     WARNING_THRESHOLD: int = 50
+    IMMEDIATE_ALERT_THRESHOLD: int = 60  # Threshold for immediate action required alerts
+    ACTIVITY_DETECTION_THRESHOLD: int = 40  # Lower threshold for activity/state changes (emergency mode)
 
     @property
     def database_url(self) -> str:

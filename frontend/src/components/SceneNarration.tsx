@@ -37,8 +37,14 @@ const SceneNarration: React.FC<SceneNarrationProps> = ({ narrations }) => {
   return (
     <div className="card">
       <div className="card-header flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Live Scene Analysis</h2>
-        <span className="text-xs text-gray-400">{narrations.length} events</span>
+        <div>
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            Live Scene Analysis
+          </h2>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-400">{narrations.length} events</span>
+        </div>
       </div>
       <div className="card-body p-0">
         <div ref={scrollRef} className="max-h-96 overflow-y-auto p-4 space-y-3">

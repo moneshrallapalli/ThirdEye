@@ -1,293 +1,368 @@
 #!/bin/bash
 
-################################################################################
-# SentinTinel Surveillance System - Startup Script
-# Starts all required services (PostgreSQL, Redis, Backend, Frontend)
-################################################################################
+###############################################################################
+#                   SENTINTINEL SURVEILLANCE SYSTEM
+#                        START SCRIPT v2.0
+###############################################################################
 
-set -e
+set -e  # Exit on error
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
-
-# Print colored message
-print_message() {
-    color=$1
-    message=$2
-    echo -e "${color}${message}${NC}"
-}
-
-print_header() {
-    echo ""
-    print_message "$BLUE" "=================================="
-    print_message "$BLUE" "$1"
-    print_message "$BLUE" "=================================="
-}
-
-print_success() {
-    print_message "$GREEN" "✓ $1"
-}
-
-print_error() {
-    print_message "$RED" "✗ $1"
-}
-
-print_warning() {
-    print_message "$YELLOW" "⚠ $1"
-}
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+BACKEND_DIR="$SCRIPT_DIR/backend"
+FRONTEND_DIR="$SCRIPT_DIR/frontend"
 
-# Create PID directory
-PID_DIR="$SCRIPT_DIR/.pids"
-mkdir -p "$PID_DIR"
+# Log files
+BACKEND_LOG="/tmp/sentintinel_backend.log"
+FRONTEND_LOG="/tmp/sentintinel_frontend.log"
 
-print_header "🛡️  Starting SentinTinel Surveillance System"
+###############################################################################
+# FUNCTIONS
+###############################################################################
 
-################################################################################
-# Check Prerequisites
-################################################################################
+print_header() {
+    echo ""
+    echo "╔═══════════════════════════════════════════════════════════════╗"
+    echo "║        🚀 SENTINTINEL SURVEILLANCE SYSTEM STARTUP            ║"
+    echo "╚═══════════════════════════════════════════════════════════════╝"
+    echo ""
+}
 
-print_header "Checking Prerequisites"
+print_step() {
+    echo -e "${CYAN}▶ $1${NC}"
+}
+
+print_success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠️  $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
+
+check_command() {
+    if command -v "$1" &> /dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+check_port() {
+    if lsof -Pi :$1 -sTCP:LISTEN -t >/dev/null 2>&1 ; then
+        return 0  # Port is in use
+    else
+        return 1  # Port is free
+    fi
+}
+
+wait_for_service() {
+    local url=$1
+    local name=$2
+    local max_attempts=30
+    local attempt=0
+    
+    print_step "Waiting for $name to start..."
+    
+    while [ $attempt -lt $max_attempts ]; do
+        if curl -s "$url" > /dev/null 2>&1; then
+            print_success "$name is ready!"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+        echo -n "."
+    done
+    
+    echo ""
+    print_error "$name failed to start within ${max_attempts} seconds"
+    return 1
+}
+
+###############################################################################
+# PRE-FLIGHT CHECKS
+###############################################################################
+
+print_header
+
+print_step "Running pre-flight checks..."
+echo ""
+
+# Check if already running
+if check_port 8000; then
+    print_warning "Backend already running on port 8000"
+    read -p "Stop and restart? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        print_step "Stopping existing backend..."
+        killall python 2>/dev/null || true
+        sleep 2
+    else
+        print_error "Cannot start - port 8000 already in use"
+        exit 1
+    fi
+fi
+
+if check_port 3000; then
+    print_warning "Frontend already running on port 3000"
+    read -p "Stop and restart? (y/n) " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        print_step "Stopping existing frontend..."
+        lsof -ti :3000 | xargs kill -9 2>/dev/null || true
+        sleep 2
+    else
+        print_error "Cannot start - port 3000 already in use"
+        exit 1
+    fi
+fi
 
 # Check Python
-if command -v python3 &> /dev/null; then
-    PYTHON_VERSION=$(python3 --version)
-    print_success "Python found: $PYTHON_VERSION"
-else
-    print_error "Python 3 is not installed"
+if ! check_command python3 && ! check_command python; then
+    print_error "Python 3 is not installed!"
+    print_info "Install Python 3: https://www.python.org/downloads/"
     exit 1
 fi
+print_success "Python found"
 
 # Check Node.js
-if command -v node &> /dev/null; then
-    NODE_VERSION=$(node --version)
-    print_success "Node.js found: $NODE_VERSION"
-else
-    print_error "Node.js is not installed"
+if ! check_command node; then
+    print_error "Node.js is not installed!"
+    print_info "Install Node.js: https://nodejs.org/"
     exit 1
 fi
+print_success "Node.js found ($(node --version))"
 
 # Check npm
-if command -v npm &> /dev/null; then
-    NPM_VERSION=$(npm --version)
-    print_success "npm found: v$NPM_VERSION"
-else
-    print_error "npm is not installed"
+if ! check_command npm; then
+    print_error "npm is not installed!"
+    exit 1
+fi
+print_success "npm found ($(npm --version))"
+
+# Check directories
+if [ ! -d "$BACKEND_DIR" ]; then
+    print_error "Backend directory not found: $BACKEND_DIR"
     exit 1
 fi
 
-################################################################################
-# Check and Start PostgreSQL
-################################################################################
-
-print_header "Starting PostgreSQL"
-
-if command -v pg_isready &> /dev/null; then
-    if pg_isready -q; then
-        print_success "PostgreSQL is already running"
-    else
-        print_warning "PostgreSQL is not running. Attempting to start..."
-
-        # Try to start PostgreSQL (different methods for different systems)
-        if command -v systemctl &> /dev/null; then
-            sudo systemctl start postgresql || print_warning "Could not start PostgreSQL via systemctl"
-        elif command -v brew &> /dev/null; then
-            brew services start postgresql || print_warning "Could not start PostgreSQL via brew"
-        else
-            print_warning "Please start PostgreSQL manually"
-        fi
-
-        # Wait a bit and check again
-        sleep 2
-        if pg_isready -q; then
-            print_success "PostgreSQL started successfully"
-        else
-            print_error "PostgreSQL is not running. Please start it manually."
-            exit 1
-        fi
-    fi
-else
-    print_warning "PostgreSQL tools not found. Assuming it's running..."
+if [ ! -d "$FRONTEND_DIR" ]; then
+    print_error "Frontend directory not found: $FRONTEND_DIR"
+    exit 1
 fi
 
-################################################################################
-# Check and Start Redis
-################################################################################
+print_success "All directories found"
 
-print_header "Starting Redis"
+###############################################################################
+# BACKEND SETUP
+###############################################################################
 
-if command -v redis-cli &> /dev/null; then
-    if redis-cli ping &> /dev/null; then
-        print_success "Redis is already running"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_step "BACKEND SETUP"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+cd "$BACKEND_DIR"
+
+# Check .env file
+if [ ! -f ".env" ]; then
+    print_error ".env file not found!"
+    print_info "Creating .env from .env.example..."
+    
+    if [ -f ".env.example" ]; then
+        cp .env.example .env
+        print_warning ".env created. Please add your API keys!"
+        print_info "Edit: $BACKEND_DIR/.env"
+        exit 1
     else
-        print_warning "Redis is not running. Attempting to start..."
-
-        # Try to start Redis (different methods for different systems)
-        if command -v systemctl &> /dev/null; then
-            sudo systemctl start redis || print_warning "Could not start Redis via systemctl"
-        elif command -v brew &> /dev/null; then
-            brew services start redis || print_warning "Could not start Redis via brew"
-        else
-            print_warning "Please start Redis manually or continue without it"
-        fi
-
-        # Wait a bit and check again
-        sleep 2
-        if redis-cli ping &> /dev/null; then
-            print_success "Redis started successfully"
-        else
-            print_warning "Redis is not running (optional service)"
-        fi
+        print_error ".env.example not found!"
+        exit 1
     fi
-else
-    print_warning "Redis not found (optional service, continuing...)"
 fi
 
-################################################################################
-# Setup Backend
-################################################################################
+print_success ".env file found"
 
-print_header "Setting up Backend"
+# Check if GEMINI_API_KEY is set
+if grep -q "your_api_key_here" .env 2>/dev/null; then
+    print_error "GEMINI_API_KEY not configured in .env!"
+    print_info "Please edit $BACKEND_DIR/.env and add your Gemini API key"
+    print_info "Get your key from: https://aistudio.google.com/app/apikey"
+    exit 1
+fi
 
-cd "$SCRIPT_DIR/backend"
+print_success "API key configured"
 
-# Check if virtual environment exists
+# Check/Create virtual environment
 if [ ! -d "venv" ]; then
-    print_warning "Virtual environment not found. Creating..."
-    python3 -m venv venv
+    print_step "Creating Python virtual environment..."
+    python3 -m venv venv || python -m venv venv
     print_success "Virtual environment created"
 fi
 
 # Activate virtual environment
+print_step "Activating virtual environment..."
 source venv/bin/activate
 
-# Check if dependencies are installed
-if [ ! -f "venv/.installed" ]; then
-    print_warning "Installing backend dependencies..."
-    pip install --upgrade pip -q
-    pip install -r requirements.txt -q
-    touch venv/.installed
-    print_success "Backend dependencies installed"
+# Install/Update Python dependencies
+if [ ! -f "venv/.dependencies_installed" ]; then
+    print_step "Installing Python dependencies (first time)..."
+    pip install --upgrade pip > /dev/null 2>&1
+    pip install -r requirements.txt
+    touch venv/.dependencies_installed
+    print_success "Python dependencies installed"
 else
-    print_success "Backend dependencies already installed"
+    print_success "Python dependencies already installed"
 fi
 
-# Check if .env exists
-if [ ! -f ".env" ]; then
-    print_warning ".env file not found. Creating from template..."
-    cp .env.example .env
-    print_warning "Please edit backend/.env and add your Gemini API key!"
-    print_warning "Waiting 5 seconds for you to configure..."
-    sleep 5
-fi
+# Create necessary directories
+print_step "Creating required directories..."
+mkdir -p event_frames
+mkdir -p chromadb_data
+mkdir -p logs
+print_success "Directories ready"
 
-# Initialize database if needed
-if [ ! -f ".db_initialized" ]; then
-    print_warning "Initializing database..."
-    python init_db.py
-    touch .db_initialized
-    print_success "Database initialized"
-fi
+###############################################################################
+# FRONTEND SETUP
+###############################################################################
 
-# Start backend
-print_message "$BLUE" "Starting backend server..."
-nohup python main.py > "$SCRIPT_DIR/.pids/backend.log" 2>&1 &
-BACKEND_PID=$!
-echo $BACKEND_PID > "$PID_DIR/backend.pid"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_step "FRONTEND SETUP"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
 
-# Wait for backend to start
-sleep 3
+cd "$FRONTEND_DIR"
 
-if kill -0 $BACKEND_PID 2>/dev/null; then
-    print_success "Backend started (PID: $BACKEND_PID)"
-    print_message "$GREEN" "Backend running at: http://localhost:8000"
-else
-    print_error "Backend failed to start. Check $SCRIPT_DIR/.pids/backend.log"
-    exit 1
-fi
-
-################################################################################
-# Setup Frontend
-################################################################################
-
-print_header "Setting up Frontend"
-
-cd "$SCRIPT_DIR/frontend"
-
-# Check if node_modules exists
+# Install node modules if needed
 if [ ! -d "node_modules" ]; then
-    print_warning "Installing frontend dependencies..."
-    npm install
-    print_success "Frontend dependencies installed"
+    print_step "Installing Node.js dependencies (this may take a few minutes)..."
+    npm install --legacy-peer-deps > /dev/null 2>&1
+    print_success "Node.js dependencies installed"
 else
-    print_success "Frontend dependencies already installed"
+    print_success "Node.js dependencies already installed"
 fi
 
-# Check if .env exists
-if [ ! -f ".env" ]; then
-    print_warning ".env file not found. Creating from template..."
-    cp .env.example .env
-    print_success ".env file created"
-fi
+###############################################################################
+# START SERVICES
+###############################################################################
 
-# Start frontend
-print_message "$BLUE" "Starting frontend server..."
-nohup npm start > "$SCRIPT_DIR/.pids/frontend.log" 2>&1 &
-FRONTEND_PID=$!
-echo $FRONTEND_PID > "$PID_DIR/frontend.pid"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_step "STARTING SERVICES"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
 
-# Wait for frontend to start
-sleep 5
+# Start Backend
+print_step "Starting backend server..."
+cd "$BACKEND_DIR"
+source venv/bin/activate
+nohup python main.py > "$BACKEND_LOG" 2>&1 &
+BACKEND_PID=$!
+echo $BACKEND_PID > /tmp/sentintinel_backend.pid
+print_success "Backend started (PID: $BACKEND_PID)"
+print_info "Backend log: $BACKEND_LOG"
 
-if kill -0 $FRONTEND_PID 2>/dev/null; then
-    print_success "Frontend started (PID: $FRONTEND_PID)"
-    print_message "$GREEN" "Frontend running at: http://localhost:3000"
-else
-    print_error "Frontend failed to start. Check $SCRIPT_DIR/.pids/frontend.log"
-    # Kill backend since frontend failed
-    kill $BACKEND_PID 2>/dev/null
+# Wait for backend
+if ! wait_for_service "http://localhost:8000" "Backend"; then
+    print_error "Backend failed to start. Check logs:"
+    print_info "tail -50 $BACKEND_LOG"
     exit 1
 fi
 
-################################################################################
-# Summary
-################################################################################
+# Start Frontend
+print_step "Starting frontend server..."
+cd "$FRONTEND_DIR"
+export BROWSER=none  # Don't auto-open browser
+nohup npm start > "$FRONTEND_LOG" 2>&1 &
+FRONTEND_PID=$!
+echo $FRONTEND_PID > /tmp/sentintinel_frontend.pid
+print_success "Frontend started (PID: $FRONTEND_PID)"
+print_info "Frontend log: $FRONTEND_LOG"
 
-print_header "✅ SentinTinel Started Successfully!"
+# Wait for frontend
+if ! wait_for_service "http://localhost:3000" "Frontend"; then
+    print_error "Frontend failed to start. Check logs:"
+    print_info "tail -50 $FRONTEND_LOG"
+    exit 1
+fi
+
+###############################################################################
+# VERIFICATION
+###############################################################################
 
 echo ""
-print_message "$GREEN" "Services Status:"
-print_message "$GREEN" "  • Backend:  http://localhost:8000"
-print_message "$GREEN" "  • Frontend: http://localhost:3000"
-print_message "$GREEN" "  • API Docs: http://localhost:8000/docs"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+print_step "VERIFICATION"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-print_message "$BLUE" "Process IDs:"
-print_message "$BLUE" "  • Backend PID:  $BACKEND_PID"
-print_message "$BLUE" "  • Frontend PID: $FRONTEND_PID"
-echo ""
-print_message "$YELLOW" "Logs:"
-print_message "$YELLOW" "  • Backend:  tail -f .pids/backend.log"
-print_message "$YELLOW" "  • Frontend: tail -f .pids/frontend.log"
-echo ""
-print_message "$GREEN" "To stop the system, run: ./stop.sh"
-echo ""
-print_message "$BLUE" "Opening dashboard in browser..."
+
 sleep 2
 
-# Try to open browser
-if command -v xdg-open &> /dev/null; then
-    xdg-open http://localhost:3000 &> /dev/null
-elif command -v open &> /dev/null; then
-    open http://localhost:3000 &> /dev/null
+# Check backend health
+if curl -s http://localhost:8000/health > /dev/null 2>&1 || curl -s http://localhost:8000/ > /dev/null 2>&1; then
+    print_success "Backend health check passed"
 else
-    print_warning "Could not open browser automatically. Please visit: http://localhost:3000"
+    print_warning "Backend health check failed (may still be starting)"
 fi
 
-print_message "$GREEN" "🎉 Happy Monitoring!"
+# Check frontend
+if curl -s http://localhost:3000 > /dev/null 2>&1; then
+    print_success "Frontend health check passed"
+else
+    print_warning "Frontend health check failed (may still be starting)"
+fi
+
+###############################################################################
+# SUCCESS
+###############################################################################
+
+echo ""
+echo "╔═══════════════════════════════════════════════════════════════╗"
+echo "║              ✅ SYSTEM STARTED SUCCESSFULLY                   ║"
+echo "╚═══════════════════════════════════════════════════════════════╝"
+echo ""
+echo "🌐 Access Points:"
+echo "   Frontend:  http://localhost:3000"
+echo "   Backend:   http://localhost:8000"
+echo "   API Docs:  http://localhost:8000/docs"
+echo ""
+echo "📊 Process IDs:"
+echo "   Backend:   $BACKEND_PID (PID file: /tmp/sentintinel_backend.pid)"
+echo "   Frontend:  $FRONTEND_PID (PID file: /tmp/sentintinel_frontend.pid)"
+echo ""
+echo "📝 Logs:"
+echo "   Backend:   tail -f $BACKEND_LOG"
+echo "   Frontend:  tail -f $FRONTEND_LOG"
+echo ""
+echo "🛑 To stop:"
+echo "   Run: ./stop.sh"
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+print_info "Opening browser in 3 seconds..."
+sleep 3
+
+# Try to open browser (macOS)
+if check_command open; then
+    open http://localhost:3000 2>/dev/null || true
+fi
+
+print_success "System ready! 🚀"
+echo ""

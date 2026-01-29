@@ -1,0 +1,104 @@
+═══════════════════════════════════════════════════════════════
+📧 RESEND EMAIL SETUP - 2 MINUTES TO GET WORKING!
+═══════════════════════════════════════════════════════════════
+
+✅ MUCH SIMPLER THAN GMAIL - NO SMTP HASSLES!
+
+═══════════════════════════════════════════════════════════════
+🚀 QUICK SETUP (3 STEPS)
+═══════════════════════════════════════════════════════════════
+
+STEP 1: Create Free Resend Account
+────────────────────────────────────────────────────────────
+1. Go to: https://resend.com/signup
+
+2. Sign up with your email (moneshralapalli@gmail.com)
+
+3. Verify your email
+
+STEP 2: Get API Key
+────────────────────────────────────────────────────────────
+1. After logging in, click "API Keys" in left sidebar
+
+2. Click "Create API Key"
+
+3. Name: SentinTinel
+
+4. Permission: Full Access
+
+5. Click "Add"
+
+6. Copy the API key (starts with: re_...)
+   Example: re_123abc456def789ghi
+
+STEP 3: Update .env File
+────────────────────────────────────────────────────────────
+1. Open: backend/.env
+
+2. Find this line:
+   RESEND_API_KEY=your-resend-api-key-here
+
+3. Replace with your actual key:
+   RESEND_API_KEY=re_123abc456def789ghi
+
+4. Save the file
+
+═══════════════════════════════════════════════════════════════
+✅ TEST IT
+═══════════════════════════════════════════════════════════════
+
+Run:
+   cd /Users/monesh/University/practice/backend
+   source venv/bin/activate
+   python test_email_resend.py
+
+You should receive 2 test emails at: moneshralapalli@gmail.com
+
+Then restart:
+   cd ..
+   ./restart.sh
+
+═══════════════════════════════════════════════════════════════
+📧 WHAT YOU GET
+═══════════════════════════════════════════════════════════════
+
+✓ FREE TIER: 100 emails/day, 3,000/month
+✓ NO SMTP configuration needed
+✓ NO app passwords
+✓ NO 2-Factor auth hassles
+✓ Just works!
+
+✓ Critical alerts sent immediately
+✓ 2-minute summaries
+✓ Same dynamic messages as your Alerts tab
+✓ Clean HTML formatting
+
+═══════════════════════════════════════════════════════════════
+⚡ WHY RESEND IS BETTER
+═══════════════════════════════════════════════════════════════
+
+Gmail SMTP:
+  ✗ Requires app password
+  ✗ Requires 2FA enabled
+  ✗ Complex SMTP configuration
+  ✗ Often gets blocked
+
+Resend:
+  ✓ Just one API key
+  ✓ Works immediately
+  ✓ No security headaches
+  ✓ Built for developers
+
+═══════════════════════════════════════════════════════════════
+🔗 LINKS
+═══════════════════════════════════════════════════════════════
+
+Sign Up: https://resend.com/signup
+Dashboard: https://resend.com/dashboard
+API Keys: https://resend.com/api-keys
+Docs: https://resend.com/docs
+
+═══════════════════════════════════════════════════════════════
+
+Just get your Resend API key and you're done! 🎉
+

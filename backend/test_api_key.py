@@ -85,7 +85,7 @@ def test_api_key():
 
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-2.5-flash')
 
         print("Sending test request to Gemini...")
         response = model.generate_content("Say 'API key is working!' in exactly those words.")

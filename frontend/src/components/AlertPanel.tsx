@@ -7,10 +7,11 @@ import { formatDistanceToNow } from 'date-fns';
 
 interface AlertPanelProps {
   alerts: Alert[];
-  onAcknowledge: (alertId: number) => void;
+  onAcknowledge: (alertId: number | string) => void;
+  onClearAll?: () => void;
 }
 
-const AlertPanel: React.FC<AlertPanelProps> = ({ alerts, onAcknowledge }) => {
+const AlertPanel: React.FC<AlertPanelProps> = ({ alerts, onAcknowledge, onClearAll }) => {
   const getSeverityStyles = (severity: AlertSeverity): string => {
     switch (severity) {
       case AlertSeverity.CRITICAL:
@@ -58,8 +59,16 @@ const AlertPanel: React.FC<AlertPanelProps> = ({ alerts, onAcknowledge }) => {
 
   return (
     <div className="card">
-      <div className="card-header">
+      <div className="card-header flex items-center justify-between">
         <h2 className="text-lg font-semibold">Alerts & Notifications</h2>
+        {onClearAll && alerts.length > 0 && (
+          <button
+            onClick={onClearAll}
+            className="px-3 py-1 text-sm bg-red-600 hover:bg-red-700 text-white rounded transition-colors"
+          >
+            Clear All ({alerts.length})
+          </button>
+        )}
       </div>
       <div className="card-body p-0">
         <div className="max-h-96 overflow-y-auto">
@@ -79,41 +88,85 @@ const AlertPanel: React.FC<AlertPanelProps> = ({ alerts, onAcknowledge }) => {
                     alert.is_read ? 'opacity-60' : ''
                   }`}
                 >
-                  <div className="flex items-start gap-3">
-                    <span className="text-2xl flex-shrink-0">
-                      {getSeverityIcon(alert.severity)}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className={`badge badge-${alert.severity.toLowerCase()}`}>
-                          {alert.severity}
-                        </span>
-                        {alert.camera_id && (
-                          <span className="text-xs text-gray-400">
-                            Camera {alert.camera_id}
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-start gap-3">
+                      <span className="text-2xl flex-shrink-0">
+                        {getSeverityIcon(alert.severity)}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`badge badge-${alert.severity.toLowerCase()}`}>
+                            {alert.severity}
                           </span>
+                          {alert.camera_id !== undefined && (
+                            <span className="text-xs text-gray-400">
+                              Camera {alert.camera_id}
+                            </span>
+                          )}
+                          {alert.significance !== undefined && (
+                            <span className="text-xs px-2 py-0.5 bg-blue-600/30 text-blue-300 rounded">
+                              {alert.significance}% confidence
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="font-semibold text-gray-100 mb-1">
+                          {alert.title}
+                        </h3>
+                        <div className="text-sm text-gray-300 mb-2 whitespace-pre-line">
+                          {alert.message}
+                        </div>
+                        
+                        {/* Display detected objects as tags */}
+                        {alert.detected_objects && alert.detected_objects.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mb-2">
+                            {alert.detected_objects.map((obj, idx) => (
+                              <span
+                                key={idx}
+                                className="text-xs px-2 py-0.5 bg-green-600/20 text-green-300 rounded-full border border-green-600/30"
+                              >
+                                {obj}
+                              </span>
+                            ))}
+                          </div>
                         )}
-                      </div>
-                      <h3 className="font-semibold text-gray-100 mb-1">
-                        {alert.title}
-                      </h3>
-                      <p className="text-sm text-gray-300 mb-2">
-                        {alert.message}
-                      </p>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-400">
-                          {formatDistanceToNow(new Date(alert.timestamp), { addSuffix: true })}
-                        </span>
-                        {!alert.is_read && (
-                          <button
-                            onClick={() => onAcknowledge(alert.id)}
-                            className="text-xs px-2 py-1 bg-primary-600 hover:bg-primary-700 text-white rounded transition-colors"
-                          >
-                            Acknowledge
-                          </button>
-                        )}
+                        
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-gray-400">
+                            {formatDistanceToNow(new Date(alert.timestamp), { addSuffix: true })}
+                          </span>
+                        <button
+                          onClick={() => onAcknowledge(alert.id)}
+                          className="text-xs px-2 py-1 bg-primary-600 hover:bg-primary-700 text-white rounded transition-colors"
+                        >
+                          Acknowledge
+                        </button>
+                        </div>
                       </div>
                     </div>
+                    
+                    {/* Supporting Image */}
+                    {(alert.frame_url || alert.frame_base64) && (
+                      <div className="ml-11 mt-2">
+                        <div className="rounded-lg overflow-hidden border border-dark-600 bg-dark-900">
+                          <img
+                            src={
+                              alert.frame_base64
+                                ? `data:image/jpeg;base64,${alert.frame_base64}`
+                                : `http://localhost:8000${alert.frame_url}`
+                            }
+                            alt="Event Frame"
+                            className="w-full h-auto max-h-64 object-contain"
+                            onError={(e) => {
+                              console.error('Image load error:', e);
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                          <div className="px-2 py-1 bg-dark-800 text-xs text-gray-400 text-center">
+                            📷 Supporting Evidence
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}

@@ -31,43 +31,103 @@ class CommandAgent:
         genai.configure(api_key=self.api_key)
 
         # Initialize Gemini model for command processing
+        from google.generativeai.types import HarmCategory, HarmBlockThreshold
         self.model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash-latest',
+            model_name='gemini-2.5-flash',
             generation_config=GenerationConfig(
                 temperature=0.3,  # Lower temperature for more consistent command parsing
                 top_p=0.95,
                 top_k=40,
                 max_output_tokens=1024,
             ),
+            safety_settings={
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
         )
 
-        # System prompt for command understanding
-        self.system_prompt = """You are an intelligent surveillance system command processor.
-Your role is to understand user commands and translate them into actionable surveillance tasks.
+        # System prompt for command understanding with improved interpretation
+        self.system_prompt = """You are an intelligent surveillance system command processor with advanced natural language understanding.
+Your role is to ACCURATELY understand user commands and translate them into precise, actionable surveillance tasks.
+
+CRITICAL: Pay close attention to:
+- Specific objects mentioned (scissors, nail cutter, phone, laptop, etc.)
+- Actions and activities (entering, leaving, picking up, holding, using)
+- Conditions (if/when/whenever/alert me if)
+- Context and intent
 
 You can perform the following tasks:
-1. OBJECT DETECTION - Detect specific objects (people, vehicles, animals, items)
-2. SURVEILLANCE MONITORING - Monitor for specific activities or behaviors
-3. SCENE ANALYSIS - Analyze and describe current scenes
-4. ALERT GENERATION - Create alerts based on specific conditions
-5. TRACKING - Track specific objects or people across cameras
-6. ANOMALY DETECTION - Identify unusual activities or patterns
+1. OBJECT DETECTION - Detect ANY specific objects (people, vehicles, animals, tools, items, devices)
+2. ACTIVITY DETECTION - Detect when specific activities or actions occur (person gets up, leaves, enters, picks up object)
+3. STATE CHANGE DETECTION - Monitor for changes in state (person sitting → standing, object present → absent)
+4. SCENE ANALYSIS - Analyze and describe current scenes
+5. ALERT GENERATION - Create alerts based on specific conditions
+6. TRACKING - Track specific objects or people across cameras
+7. ANOMALY DETECTION - Identify unusual activities or patterns
 
-When you receive a command, respond with a JSON object:
+CRITICAL OUTPUT FORMAT - Respond ONLY with valid JSON (no markdown, no code blocks):
 {
-  "task_type": "object_detection|surveillance|scene_analysis|alert|tracking|anomaly_detection",
-  "target": "what to look for (person, vehicle, specific object, activity)",
+  "task_type": "object_detection|activity_detection|state_change_detection|surveillance|scene_analysis|alert|tracking|anomaly_detection",
+  "target": "EXACT object/activity/change to look for",
+  "query_type": "object|activity|state_change",
+  "requires_baseline": true/false,
+  "baseline_description": "What is the starting state to track from? (for activity/state change)",
+  "expected_change": "What change/activity should trigger the alert?",
   "parameters": {
-    "camera_ids": [list of camera IDs or "all"],
-    "duration": "how long to monitor (minutes) or 'continuous'",
-    "alert_threshold": "low|medium|high",
-    "specific_conditions": ["list of specific conditions to check"]
+    "camera_ids": ["all"],
+    "duration": "continuous",
+    "alert_threshold": "medium",
+    "specific_conditions": ["list of SPECIFIC conditions"],
+    "objects_to_detect": ["list ALL specific objects mentioned"],
+    "activities_to_detect": ["list of activities like 'person gets up', 'leaves frame', 'picks up object']",
+    "track_state_changes": true/false
   },
-  "confirmation": "Natural language confirmation of what will be done",
-  "understood_intent": "Your understanding of user's intent"
+  "confirmation": "Natural language confirmation",
+  "understood_intent": "Detailed explanation of what you understood"
 }
 
-Examples:
+EXAMPLES showing proper understanding:
+
+User: "alert me if you see scissors"
+Response: {
+  "task_type": "object_detection",
+  "target": "scissors",
+  "query_type": "object",
+  "requires_baseline": false,
+  "parameters": {
+    "camera_ids": ["all"],
+    "duration": "continuous",
+    "alert_threshold": "medium",
+    "specific_conditions": ["detect scissors in frame", "alert when scissors appear"],
+    "objects_to_detect": ["scissors"],
+    "track_state_changes": false
+  },
+  "confirmation": "I will continuously monitor all cameras and alert you immediately when scissors are detected",
+  "understood_intent": "User wants to be alerted when scissors appear in any camera view"
+}
+
+User: "notify me when the person sitting in chair gets up and moves out of frame"
+Response: {
+  "task_type": "activity_detection",
+  "target": "person gets up and leaves",
+  "query_type": "activity",
+  "requires_baseline": true,
+  "baseline_description": "Person sitting in chair (initial state)",
+  "expected_change": "Person gets up from chair AND moves out of frame",
+  "parameters": {
+    "camera_ids": ["all"],
+    "duration": "continuous",
+    "alert_threshold": "medium",
+    "specific_conditions": ["person stands up from chair", "person leaves frame"],
+    "activities_to_detect": ["person gets up", "person moves", "person exits frame"],
+    "track_state_changes": true
+  },
+  "confirmation": "I will monitor the scene and alert you when the person sitting in the chair gets up and moves out of frame",
+  "understood_intent": "User wants to track activity: starting state is person sitting in chair, alert when person gets up and exits the frame"
+}
+
 User: "Watch for any person entering the building"
 Response: {
   "task_type": "object_detection",
@@ -135,8 +195,35 @@ Always be clear, concise, and security-focused. Respond only with valid JSON."""
                 prompt
             )
 
-            # Parse response
-            parsed_command = self._parse_command_response(response.text)
+            # Check if response was blocked by safety filters
+            if not response.parts or not response.text:
+                # Handle safety block or empty response
+                from loguru import logger
+                logger.warning(f"Command response blocked or empty. Finish reason: {response.candidates[0].finish_reason if response.candidates else 'unknown'}")
+
+                # Create a default surveillance task for the command
+                parsed_command = {
+                    "task_type": "surveillance",
+                    "target": user_command,
+                    "parameters": {
+                        "camera_ids": ["all"],
+                        "duration": "continuous",
+                        "alert_threshold": "medium",
+                        "specific_conditions": [user_command]
+                    },
+                    "confirmation": f"I will monitor for: {user_command}",
+                    "understood_intent": user_command
+                }
+            else:
+                # Parse response with better error handling
+                parsed_command = self._parse_command_response(response.text)
+                
+                # Log parsed command for debugging
+                from loguru import logger
+                logger.info(f"[COMMAND] Parsed task_type: {parsed_command.get('task_type')}")
+                logger.info(f"[COMMAND] Parsed target: {parsed_command.get('target')}")
+                logger.info(f"[COMMAND] Parsed objects_to_detect: {parsed_command.get('parameters', {}).get('objects_to_detect')}")
+
             parsed_command['original_command'] = user_command
             parsed_command['timestamp'] = datetime.utcnow().isoformat()
 
@@ -144,7 +231,7 @@ Always be clear, concise, and security-focused. Respond only with valid JSON."""
             task_id = f"task_{datetime.utcnow().timestamp()}"
             parsed_command['task_id'] = task_id
 
-            # Store active task
+            # Store active task with command details
             self.active_tasks[task_id] = {
                 "command": parsed_command,
                 "status": "active",

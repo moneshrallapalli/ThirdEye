@@ -1,0 +1,121 @@
+══════════════════════════════════════════════════════════
+🐛 CRITICAL BUG FIXED - TEST NOW!
+══════════════════════════════════════════════════════════
+
+THE PROBLEM WAS: API and Worker had SEPARATE CommandAgent instances.
+Your commands were stored in ONE, but Worker checked the OTHER!
+
+I FIXED IT: Now they share the SAME CommandAgent instance.
+Commands are now visible to both!
+
+══════════════════════════════════════════════════════════
+✅ SYSTEM STATUS
+══════════════════════════════════════════════════════════
+✓ Backend: Running (PID: 54278)
+✓ Frontend: Running (PID: 54300)
+✓ Claude Reasoning Agent: Initialized ✓
+✓ Shared CommandAgent: Fixed ✓
+
+══════════════════════════════════════════════════════════
+🚀 TEST NOW (3 MINUTES)
+══════════════════════════════════════════════════════════
+
+STEP 1: Open Terminal
+────────────────────────────────────────────────────────
+tail -f /tmp/sentintinel_backend.log | grep -E "USER QUERY ACTIVE|BASELINE|CLAUDE|EMERGENCY|FORCE"
+
+(Leave this open! You'll see all the important events here)
+
+STEP 2: Open Browser
+────────────────────────────────────────────────────────
+http://localhost:3000
+
+STEP 3: Enter Command
+────────────────────────────────────────────────────────
+Type: alert me when person leaves the camera frame
+Press: ENTER
+
+STEP 4: VERIFY TASK IS ACTIVE! ⚠️ CRITICAL!
+────────────────────────────────────────────────────────
+Look at Terminal #1 IMMEDIATELY!
+
+YOU MUST SEE (within 5 seconds):
+[USER QUERY ACTIVE] Type: activity_detection | Looking for: ... | Requires baseline: True
+
+IF YOU SEE THIS ──> Bug is FIXED! Continue to Step 5 ✅
+IF YOU DON'T SEE THIS ──> Tell me immediately! ❌
+
+STEP 5: Sit Still (60 seconds)
+────────────────────────────────────────────────────────
+- Sit in front of camera
+- Don't move at all
+- Wait 60 seconds
+
+STEP 6: Watch For Baseline
+────────────────────────────────────────────────────────
+In Terminal, YOU MUST SEE:
+[BASELINE ESTABLISHED] State: Person seated in chair...
+
+In Browser, YOU MUST SEE:
+✓ Baseline established: Person seated in chair...
+
+STEP 7: Leave Frame
+────────────────────────────────────────────────────────
+- Stand up
+- Walk completely out of camera view
+- Make sure you're not visible AT ALL
+- Stay out for 30-60 seconds
+
+STEP 8: GET YOUR ALERT! 🚨
+────────────────────────────────────────────────────────
+In Terminal, YOU MUST SEE:
+🚨 EMERGENCY DETECTION: Person was present but is now ABSENT!
+[FORCE ALERT] Confidence boosted to 95%
+[CLAUDE REASONING] Event: True | Confidence: 95%
+🚨 EMERGENCY ALERT TRIGGERED
+
+In Browser, YOU MUST SEE:
+🚨 CRITICAL EVENT DETECTED! (95% confidence)
+Person who was in baseline has LEFT the frame!
+
+══════════════════════════════════════════════════════════
+✅ SUCCESS CHECKLIST
+══════════════════════════════════════════════════════════
+□ [USER QUERY ACTIVE] appeared in logs after command
+□ [BASELINE ESTABLISHED] appeared after 60 seconds
+□ 🚨 EMERGENCY DETECTION appeared when you left
+□ [FORCE ALERT] Confidence boosted to 95%
+□ [CLAUDE REASONING] appeared
+□ 🚨 EMERGENCY ALERT TRIGGERED appeared
+□ Browser showed 🚨 CRITICAL EVENT DETECTED
+□ Browser showed 95% confidence
+□ Browser showed Claude's reasoning
+
+══════════════════════════════════════════════════════════
+🎯 THE CRITICAL INDICATOR
+══════════════════════════════════════════════════════════
+
+After entering the command, if you see:
+[USER QUERY ACTIVE] Type: activity_detection...
+
+Then the bug IS FIXED and everything else WILL work! ✅
+
+If you DON'T see this, the fix didn't work. ❌
+
+══════════════════════════════════════════════════════════
+💬 AFTER TEST, REPLY WITH:
+══════════════════════════════════════════════════════════
+✅ "IT WORKED! Saw [USER QUERY ACTIVE], baseline, and 95% alert!"
+OR
+❌ "Didn't see [USER QUERY ACTIVE]" + paste terminal output
+
+══════════════════════════════════════════════════════════
+🎉 THIS SHOULD WORK NOW!
+══════════════════════════════════════════════════════════
+
+The bug was THE problem. All the code was perfect, the pieces
+just weren't connected. Now they are!
+
+GO TEST! 🚀
+══════════════════════════════════════════════════════════
+

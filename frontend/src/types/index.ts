@@ -1,5 +1,5 @@
 /**
- * Type definitions for SentinTinel Surveillance System
+ * Type definitions for ThirdEye Intelligent Monitoring System
  */
 
 export enum AlertSeverity {
@@ -53,17 +53,24 @@ export interface Event {
 }
 
 export interface Alert {
-  id: number;
-  event_id: number;
+  id: number | string;
+  event_id?: number;
   severity: AlertSeverity;
   title: string;
   message: string;
   timestamp: string;
   is_read: boolean;
-  is_dismissed: boolean;
+  is_dismissed?: boolean;
   acknowledged_at?: string;
   response_time_seconds?: number;
   camera_id?: number;
+  // Image support fields
+  significance?: number;
+  frame_url?: string;
+  frame_path?: string;
+  frame_base64?: string;
+  detections?: Detection[];
+  detected_objects?: string[];
 }
 
 export interface LiveFeedUpdate {

@@ -1,0 +1,168 @@
+═══════════════════════════════════════════════════════════════
+📧 EMAIL NOTIFICATIONS - SETUP INSTRUCTIONS
+═══════════════════════════════════════════════════════════════
+
+✅ CONFIGURED TO SEND TO: moneshralapalli@gmail.com
+
+═══════════════════════════════════════════════════════════════
+🔧 WHAT YOU NEED TO DO NOW
+═══════════════════════════════════════════════════════════════
+
+STEP 1: Create Gmail App Password
+────────────────────────────────────────────────────────────
+1. Go to: https://myaccount.google.com/apppasswords
+
+2. If you see "App passwords unavailable":
+   - First enable 2-Factor Authentication
+   - Go to: https://myaccount.google.com/security
+   - Enable "2-Step Verification"
+   - Then come back to app passwords
+
+3. Create App Password:
+   - App: Mail
+   - Device: Other (Custom name)
+   - Name: SentinTinel Surveillance
+   - Click Generate
+
+4. Copy the 16-character password
+   (looks like: abcd efgh ijkl mnop)
+
+STEP 2: Update .env File
+────────────────────────────────────────────────────────────
+1. Open: backend/.env
+
+2. Find these lines:
+   EMAIL_SENDER=your-email@gmail.com
+   EMAIL_PASSWORD=your-app-password-here
+
+3. Replace with:
+   EMAIL_SENDER=your-actual-gmail@gmail.com
+   EMAIL_PASSWORD=abcdefghijklmnop
+
+   (Use your Gmail and the 16-char app password)
+
+STEP 3: Test Email System
+────────────────────────────────────────────────────────────
+Run:
+   cd /Users/monesh/University/practice/backend
+   source venv/bin/activate
+   python test_email.py
+
+You should see:
+   ✅ Critical alert email sent successfully!
+   ✅ Summary email sent successfully!
+
+Check your inbox: moneshralapalli@gmail.com
+
+STEP 4: Restart System
+────────────────────────────────────────────────────────────
+   cd /Users/monesh/University/practice
+   ./restart.sh
+
+═══════════════════════════════════════════════════════════════
+📧 WHAT EMAILS YOU'LL RECEIVE
+═══════════════════════════════════════════════════════════════
+
+✓ Critical Alerts (95%+ confidence):
+  - Subject: 🚨 CRITICAL: [Event Description]
+  - Human-like message (as you requested)
+  - Camera info & confidence
+  - Attached image (before/after for activity)
+
+✓ 2-Minute Summaries (when significant events occur):
+  - Subject: 📊 Activity Summary (2-min)
+  - Period covered
+  - Number of events
+  - Most significant event
+  - Top 5 events list
+  - Image attached
+
+✗ WON'T Send:
+  - Low confidence events (<60%)
+  - Regular narrations
+  - Minor updates
+  - Noise/unnecessary alerts
+
+═══════════════════════════════════════════════════════════════
+🔒 SECURITY NOTES
+═══════════════════════════════════════════════════════════════
+
+✓ App Password is MORE secure than your real password
+✓ Can be revoked anytime without changing Gmail password
+✓ Specific to this app only
+✓ Stored only in .env (not in git, never public)
+
+═══════════════════════════════════════════════════════════════
+⚡ QUICK SETUP (Copy & Paste)
+═══════════════════════════════════════════════════════════════
+
+1. Get App Password:
+   https://myaccount.google.com/apppasswords
+
+2. Edit .env:
+   cd /Users/monesh/University/practice/backend
+   nano .env
+
+3. Update these lines:
+   EMAIL_SENDER=your-gmail@gmail.com
+   EMAIL_PASSWORD=your-16-char-password
+
+4. Save (Ctrl+X, Y, Enter)
+
+5. Test:
+   source venv/bin/activate
+   python test_email.py
+
+6. Restart:
+   cd ..
+   ./restart.sh
+
+═══════════════════════════════════════════════════════════════
+🎯 EXAMPLE .env CONFIGURATION
+═══════════════════════════════════════════════════════════════
+
+# Email Notification Settings
+EMAIL_SMTP_SERVER=smtp.gmail.com
+EMAIL_SMTP_PORT=587
+EMAIL_SENDER=myemail@gmail.com          ← Your Gmail
+EMAIL_PASSWORD=abcdefghijklmnop         ← 16-char app password
+EMAIL_RECIPIENT=moneshralapalli@gmail.com  ← Already set!
+
+═══════════════════════════════════════════════════════════════
+❓ TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════
+
+Error: "Username and Password not accepted"
+→ Double-check app password (must be 16 characters, no spaces)
+→ Make sure 2-Factor Auth is enabled
+→ Generate new app password and try again
+
+Error: "Please log in via your web browser"
+→ Gmail is blocking the login
+→ Try: https://accounts.google.com/DisplayUnlockCaptcha
+→ Then test again
+
+Test email not received?
+→ Check spam/junk folder
+→ Wait 1-2 minutes (sometimes delayed)
+→ Verify EMAIL_RECIPIENT is correct
+
+═══════════════════════════════════════════════════════════════
+✅ READY TO GO!
+═══════════════════════════════════════════════════════════════
+
+Once you:
+1. ✓ Get app password from Google
+2. ✓ Update .env file
+3. ✓ Run test (python test_email.py)
+4. ✓ Restart system (./restart.sh)
+
+Then:
+→ All critical alerts will be emailed to moneshralapalli@gmail.com
+→ 2-minute summaries will be emailed
+→ You'll get immediate notifications on your phone/email!
+
+═══════════════════════════════════════════════════════════════
+
+Questions? Let me know!
+

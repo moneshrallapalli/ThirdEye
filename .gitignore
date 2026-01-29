@@ -79,3 +79,4 @@ recordings/
 *.mp4
 *.avi
 *.mov
+backend/event_frames

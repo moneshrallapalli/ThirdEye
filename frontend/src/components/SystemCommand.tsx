@@ -37,6 +37,19 @@ const SystemCommand: React.FC<SystemCommandProps> = ({ onCommand }) => {
           timestamp: message.timestamp
         }, ...prev].slice(0, 5));
         setIsProcessing(false);
+      } else if (message.type === 'camera_started') {
+        setResponses(prev => [{
+          type: 'info',
+          message: `📹 ${message.data?.message}`,
+          timestamp: message.timestamp
+        }, ...prev].slice(0, 5));
+      } else if (message.type === 'camera_error') {
+        setResponses(prev => [{
+          type: 'error',
+          message: `❌ ${message.data?.message}`,
+          timestamp: message.timestamp
+        }, ...prev].slice(0, 5));
+        setIsProcessing(false);
       } else if (message.type === 'task_started') {
         setResponses(prev => [{
           type: 'started',
@@ -67,6 +80,7 @@ const SystemCommand: React.FC<SystemCommandProps> = ({ onCommand }) => {
       wsService.removeHandler('/ws/system', handleSystemMessage);
     };
   }, []);
+
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,6 +156,8 @@ const SystemCommand: React.FC<SystemCommandProps> = ({ onCommand }) => {
                       ? 'bg-red-900/20 border border-red-800/30'
                       : response.type === 'alert'
                       ? 'bg-yellow-900/20 border border-yellow-800/30'
+                      : response.type === 'info'
+                      ? 'bg-blue-900/20 border border-blue-800/30'
                       : 'bg-primary-900/20 border border-primary-800/30'
                   }`}
                 >
