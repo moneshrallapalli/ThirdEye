@@ -45,8 +45,36 @@ EOF
 
 if [ $? -eq 0 ]; then
     echo ""
-    echo "✓ Database setup complete!"
-    echo "You can now run: python init_db.py"
+    echo "✓ Database and user created!"
+    echo ""
+
+    # Initialize tables
+    echo "Creating database tables..."
+    python -c "from database import init_db; init_db()"
+
+    if [ $? -eq 0 ]; then
+        echo "✓ Database tables created!"
+        echo ""
+
+        # Seed admin user
+        echo "Creating admin user..."
+        python seed_admin.py
+
+        if [ $? -eq 0 ]; then
+            echo ""
+            echo "╔════════════════════════════════════════════════════════╗"
+            echo "║           ✅ SETUP COMPLETE!                          ║"
+            echo "╚════════════════════════════════════════════════════════╝"
+            echo ""
+            echo "Admin credentials:"
+            echo "  Email:    moneshrallapalli@gmail.com"
+            echo "  Password: admin123"
+            echo ""
+            echo "⚠️  Please change the password after first login!"
+        fi
+    else
+        echo "✗ Failed to create database tables"
+    fi
 else
     echo ""
     echo "✗ Database setup failed. Please check your PostgreSQL connection."

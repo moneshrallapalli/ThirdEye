@@ -27,6 +27,22 @@ class DetectionStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
+class User(Base):
+    """User accounts for authentication"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255))
+    is_active = Column(Boolean, default=False)  # False until email verified
+    is_verified = Column(Boolean, default=False)
+    verification_token = Column(String(255), nullable=True, index=True)
+    verification_token_expires = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login = Column(DateTime, nullable=True)
+
+
 class Camera(Base):
     """Camera configuration and metadata"""
     __tablename__ = "cameras"

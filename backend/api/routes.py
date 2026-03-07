@@ -1,7 +1,7 @@
 """
 API routes for SentinTinel Surveillance System
 """
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -14,11 +14,17 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import get_db, Camera, Event, Detection, Alert, ContextPattern, AlertSeverity
+from database import get_db, User, Camera, Event, Detection, Alert, ContextPattern, AlertSeverity
 from api.websocket import manager
 from agents import VisionAgent, ContextAgent
 from services import camera_service
+from services.email_verification_service import send_verification_email, send_welcome_email
 from config import settings
+from auth import (
+    UserCreate, UserLogin, Token, UserResponse, ResendVerificationRequest,
+    create_access_token, verify_password, get_password_hash,
+    create_verification_token, get_current_active_user
+)
 
 # Create routers
 router = APIRouter()
@@ -37,12 +43,196 @@ def get_command_agent():
 command_agent = None  # Will be lazy-loaded when needed
 
 
+# Authentication endpoints
+@router.post("/auth/signup", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def signup(user_data: UserCreate, db: Session = Depends(get_db)):
+    """
+    Register a new user account
+    """
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == user_data.email).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+
+    # Create verification token
+    verification_token = create_verification_token()
+    verification_expires = datetime.utcnow() + timedelta(hours=24)
+
+    # Create new user
+    new_user = User(
+        email=user_data.email,
+        hashed_password=get_password_hash(user_data.password),
+        full_name=user_data.full_name,
+        is_active=False,  # Will be activated after email verification
+        is_verified=False,
+        verification_token=verification_token,
+        verification_token_expires=verification_expires
+    )
+
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    # Send verification email
+    email_sent = await send_verification_email(new_user.email, verification_token)
+    if not email_sent:
+        logger.warning(f"Failed to send verification email to {new_user.email}")
+
+    logger.info(f"New user registered: {new_user.email}")
+
+    return new_user
+
+
+@router.post("/auth/login", response_model=Token)
+async def login(user_data: UserLogin, db: Session = Depends(get_db)):
+    """
+    Login and get access token
+    """
+    # Find user by email
+    user = db.query(User).filter(User.email == user_data.email).first()
+
+    # Verify user exists and password is correct
+    if not user or not verify_password(user_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Check if user is verified
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email not verified. Please check your email for verification link."
+        )
+
+    # Check if user is active
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is inactive. Please contact support."
+        )
+
+    # Update last login
+    user.last_login = datetime.utcnow()
+    db.commit()
+
+    # Create access token
+    access_token = create_access_token(data={"sub": user.email})
+
+    logger.info(f"User logged in: {user.email}")
+
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.get("/auth/verify-email")
+async def verify_email(token: str, db: Session = Depends(get_db)):
+    """
+    Verify user email with token from email link
+    """
+    # Find user by verification token
+    user = db.query(User).filter(User.verification_token == token).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid verification token"
+        )
+
+    # Check if token is expired
+    if user.verification_token_expires and user.verification_token_expires < datetime.utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification token has expired. Please request a new one."
+        )
+
+    # Verify user
+    user.is_verified = True
+    user.is_active = True
+    user.verification_token = None
+    user.verification_token_expires = None
+    db.commit()
+
+    # Send welcome email
+    await send_welcome_email(user.email, user.full_name)
+
+    logger.info(f"User email verified: {user.email}")
+
+    return {"message": "Email verified successfully! You can now login."}
+
+
+@router.get("/auth/me", response_model=UserResponse)
+async def get_current_user_info(current_user: User = Depends(get_current_active_user)):
+    """
+    Get current authenticated user information
+    """
+    return current_user
+
+
+@router.post("/auth/resend-verification")
+async def resend_verification(request: ResendVerificationRequest, db: Session = Depends(get_db)):
+    """
+    Resend verification email
+    """
+    user = db.query(User).filter(User.email == request.email).first()
+
+    if not user:
+        # Don't reveal if email exists or not
+        return {"message": "If the email exists, a verification link has been sent."}
+
+    if user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is already verified"
+        )
+
+    # Generate new token
+    verification_token = create_verification_token()
+    verification_expires = datetime.utcnow() + timedelta(hours=24)
+
+    user.verification_token = verification_token
+    user.verification_token_expires = verification_expires
+    db.commit()
+
+    # Send verification email
+    await send_verification_email(user.email, verification_token)
+
+    return {"message": "Verification email sent. Please check your inbox."}
+
+
 # WebSocket endpoints
 @ws_router.websocket("/ws/live-feed")
-async def websocket_live_feed(websocket: WebSocket):
+async def websocket_live_feed(websocket: WebSocket, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
     """
     WebSocket endpoint for live video feed and analysis
     """
+    # Validate JWT token
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    try:
+        from jose import jwt, JWTError
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        email: str = payload.get("sub")
+
+        if email is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        # Verify user exists and is active
+        user = db.query(User).filter(User.email == email).first()
+        if not user or not user.is_active or not user.is_verified:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+    except JWTError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect(websocket, "live_feed")
 
     try:
@@ -64,10 +254,33 @@ async def websocket_live_feed(websocket: WebSocket):
 
 
 @ws_router.websocket("/ws/alerts")
-async def websocket_alerts(websocket: WebSocket):
+async def websocket_alerts(websocket: WebSocket, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
     """
     WebSocket endpoint for real-time alerts
     """
+    # Validate JWT token
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    try:
+        from jose import jwt, JWTError
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        email: str = payload.get("sub")
+
+        if email is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        user = db.query(User).filter(User.email == email).first()
+        if not user or not user.is_active or not user.is_verified:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+    except JWTError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect(websocket, "alerts")
 
     try:
@@ -78,10 +291,33 @@ async def websocket_alerts(websocket: WebSocket):
 
 
 @ws_router.websocket("/ws/analysis")
-async def websocket_analysis(websocket: WebSocket):
+async def websocket_analysis(websocket: WebSocket, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
     """
     WebSocket endpoint for scene analysis/narration
     """
+    # Validate JWT token
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    try:
+        from jose import jwt, JWTError
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        email: str = payload.get("sub")
+
+        if email is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        user = db.query(User).filter(User.email == email).first()
+        if not user or not user.is_active or not user.is_verified:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+    except JWTError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect(websocket, "analysis")
 
     try:
@@ -92,10 +328,33 @@ async def websocket_analysis(websocket: WebSocket):
 
 
 @ws_router.websocket("/ws/system")
-async def websocket_system(websocket: WebSocket):
+async def websocket_system(websocket: WebSocket, token: Optional[str] = Query(None), db: Session = Depends(get_db)):
     """
     WebSocket endpoint for system messages and commands
     """
+    # Validate JWT token
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    try:
+        from jose import jwt, JWTError
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        email: str = payload.get("sub")
+
+        if email is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        user = db.query(User).filter(User.email == email).first()
+        if not user or not user.is_active or not user.is_verified:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+    except JWTError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect(websocket, "system")
 
     try:
@@ -142,7 +401,8 @@ async def create_camera(
     name: str,
     location: str,
     stream_url: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Create a new camera
@@ -162,7 +422,11 @@ async def create_camera(
 
 
 @router.post("/cameras/{camera_id}/start")
-async def start_camera(camera_id: int, db: Session = Depends(get_db)):
+async def start_camera(
+    camera_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Start a camera feed
     """
@@ -207,7 +471,11 @@ async def start_camera(camera_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/cameras/{camera_id}/stop")
-async def stop_camera(camera_id: int, db: Session = Depends(get_db)):
+async def stop_camera(
+    camera_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """
     Stop a camera feed
     """

@@ -238,6 +238,61 @@ mkdir -p chromadb_data
 mkdir -p logs
 print_success "Directories ready"
 
+# Check if Docker is installed and running
+print_step "Checking Docker services..."
+if check_command docker; then
+    if docker ps > /dev/null 2>&1; then
+        print_success "Docker is running"
+
+        # Check if containers are running
+        if docker ps | grep -q "sentintinel_postgres"; then
+            print_success "PostgreSQL container is running"
+        else
+            print_step "Starting database containers (postgres + redis)..."
+            docker-compose up -d postgres redis > /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                print_success "Database containers started"
+                print_step "Waiting for PostgreSQL to be ready..."
+                sleep 5
+            else
+                print_warning "Failed to start database containers"
+                print_info "You may need to start them manually: docker-compose up -d postgres redis"
+            fi
+        fi
+    else
+        print_warning "Docker is not running"
+        print_info "Please start Docker Desktop or run: docker-compose up -d"
+    fi
+else
+    print_warning "Docker not found - skipping database checks"
+fi
+
+# Initialize database tables (first time only)
+if [ ! -f "venv/.database_initialized" ]; then
+    print_step "Initializing database tables..."
+    python -c "from database import init_db; init_db()" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        touch venv/.database_initialized
+        print_success "Database tables created"
+
+        # Seed admin user
+        print_step "Seeding admin user..."
+        python seed_admin.py
+        if [ $? -eq 0 ]; then
+            print_success "Admin user created"
+            print_info "   Email: moneshralapalli@gmail.com"
+            print_info "   Password: admin123"
+        else
+            print_warning "Failed to seed admin user (may already exist)"
+        fi
+    else
+        print_warning "Database initialization skipped (database not available)"
+        print_info "The system will work without database - start Docker and restart"
+    fi
+else
+    print_success "Database already initialized"
+fi
+
 ###############################################################################
 # FRONTEND SETUP
 ###############################################################################
@@ -342,6 +397,10 @@ echo "🌐 Access Points:"
 echo "   Frontend:  http://localhost:3000"
 echo "   Backend:   http://localhost:8000"
 echo "   API Docs:  http://localhost:8000/docs"
+echo ""
+echo "🔐 Login Credentials:"
+echo "   Email:     moneshralapalli@gmail.com"
+echo "   Password:  admin123"
 echo ""
 echo "📊 Process IDs:"
 echo "   Backend:   $BACKEND_PID (PID file: /tmp/sentintinel_backend.pid)"

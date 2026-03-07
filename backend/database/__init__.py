@@ -3,6 +3,7 @@ Database package initialization
 """
 from .models import (
     Base,
+    User,
     Camera,
     Event,
     Detection,
@@ -16,6 +17,7 @@ from .database import get_db, init_db, engine, SessionLocal
 
 __all__ = [
     "Base",
+    "User",
     "Camera",
     "Event",
     "Detection",

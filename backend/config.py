@@ -13,10 +13,9 @@ class Settings(BaseSettings):
     CLAUDE_API_KEY: str  # Anthropic Claude API key for reasoning agent
     GOOGLE_PROJECT_ID: Optional[str] = None
 
-    # Email Configuration
-    RESEND_API_KEY: Optional[str] = None  # Resend - Recommended (excellent deliverability)
-    BREVO_API_KEY: Optional[str] = None   # Brevo - Alternative
-    EMAIL_RECIPIENT: str = "moneshralapalli@gmail.com"
+    # Email Configuration (Gmail SMTP)
+    GMAIL_USER: str = "moneshrallapalli@gmail.com"
+    GMAIL_APP_PASSWORD: str = ""
 
     # Database Configuration
     POSTGRES_HOST: str = "localhost"
@@ -44,6 +43,7 @@ class Settings(BaseSettings):
 
     # Security
     SECRET_KEY: str
+    ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     # Camera Configuration
