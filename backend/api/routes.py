@@ -460,7 +460,13 @@ async def start_camera(
             raise HTTPException(status_code=404, detail="Camera not found")
 
         fps = camera.fps
-        stream_url = camera.stream_url or camera_id
+        raw_url = camera.stream_url or str(camera_id)
+        # Convert numeric strings (e.g. "0") to int so cv2.VideoCapture treats
+        # them as device indices, not file paths.
+        try:
+            stream_url = int(raw_url)
+        except (ValueError, TypeError):
+            stream_url = raw_url
 
     except HTTPException:
         raise

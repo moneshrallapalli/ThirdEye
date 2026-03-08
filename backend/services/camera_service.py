@@ -43,7 +43,17 @@ class CameraService:
             Success status
         """
         try:
-            cap = cv2.VideoCapture(source)
+            # Convert numeric strings to int so cv2 treats them as device
+            # indices (e.g. "0" → 0) rather than file paths.
+            if isinstance(source, str) and source.strip().lstrip('-').isdigit():
+                source = int(source)
+
+            # On macOS use AVFoundation backend for webcam indices to avoid
+            # permission and access issues with the default backend.
+            if isinstance(source, int):
+                cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
+            else:
+                cap = cv2.VideoCapture(source)
 
             if not cap.isOpened():
                 return False
