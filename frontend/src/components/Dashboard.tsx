@@ -151,6 +151,21 @@ function Dashboard() {
     }
   };
 
+  const handleCameraAdd = async (name: string, location: string, streamUrl: string) => {
+    await cameraApi.create(name, location, streamUrl);
+    await loadCameras();
+  };
+
+  const handleCameraDelete = async (cameraId: number) => {
+    await cameraApi.delete(cameraId);
+    setLiveFeedData((prev) => {
+      const newMap = new Map(prev);
+      newMap.delete(cameraId);
+      return newMap;
+    });
+    await loadCameras();
+  };
+
   const handleAcknowledgeAlert = async (alertId: number | string) => {
     try {
       console.log('Acknowledging alert:', alertId);
@@ -317,6 +332,8 @@ function Dashboard() {
                   liveFeedData={liveFeedData}
                   onCameraStart={handleCameraStart}
                   onCameraStop={handleCameraStop}
+                  onCameraAdd={handleCameraAdd}
+                  onCameraDelete={handleCameraDelete}
                 />
               </div>
 
@@ -356,6 +373,8 @@ function Dashboard() {
             liveFeedData={liveFeedData}
             onCameraStart={handleCameraStart}
             onCameraStop={handleCameraStop}
+            onCameraAdd={handleCameraAdd}
+            onCameraDelete={handleCameraDelete}
           />
         )}
 

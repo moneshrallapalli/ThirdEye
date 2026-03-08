@@ -31,6 +31,10 @@ export const cameraApi = {
   stop: async (cameraId: number): Promise<void> => {
     await api.post(`/cameras/${cameraId}/stop`);
   },
+
+  delete: async (cameraId: number): Promise<void> => {
+    await api.delete(`/cameras/${cameraId}`);
+  },
 };
 
 export const eventApi = {

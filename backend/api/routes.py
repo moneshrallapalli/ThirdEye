@@ -398,9 +398,7 @@ async def get_cameras(db: Session = Depends(get_db)):
 
 @router.post("/cameras")
 async def create_camera(
-    name: str,
-    location: str,
-    stream_url: str,
+    camera_data: dict,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -408,17 +406,38 @@ async def create_camera(
     Create a new camera
     """
     camera = Camera(
-        name=name,
-        location=location,
-        stream_url=stream_url,
-        is_active=True
+        name=camera_data.get("name", "Camera"),
+        location=camera_data.get("location", ""),
+        stream_url=camera_data.get("stream_url", ""),
+        is_active=False
     )
-
     db.add(camera)
     db.commit()
     db.refresh(camera)
-
     return camera
+
+
+@router.delete("/cameras/{camera_id}")
+async def delete_camera(
+    camera_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Delete a camera and stop its worker if running
+    """
+    camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    # Stop worker and hardware capture if running
+    import main as main_module
+    main_module.stop_camera_worker(camera_id)
+    await camera_service.stop_camera(camera_id)
+
+    db.delete(camera)
+    db.commit()
+    return {"status": "deleted", "camera_id": camera_id}
 
 
 @router.post("/cameras/{camera_id}/start")
@@ -450,7 +469,7 @@ async def start_camera(
         from loguru import logger
         logger.warning(f"Database not available, starting camera {camera_id} directly: {e}")
 
-    # Initialize camera (works with or without database)
+    # Initialize camera hardware capture
     success = await camera_service.initialize_camera(
         camera_id,
         stream_url,
@@ -458,13 +477,17 @@ async def start_camera(
     )
 
     if success:
-        # Update database if available
         if camera is not None:
             try:
                 camera.is_active = True
                 db.commit()
-            except:
-                pass  # DB update failed, but camera started
+            except Exception:
+                pass
+
+        # Start the independent per-camera worker task
+        import main as main_module
+        main_module.start_camera_worker(camera_id)
+
         return {"status": "started", "camera_id": camera_id}
     else:
         raise HTTPException(status_code=500, detail="Failed to start camera")
@@ -493,16 +516,19 @@ async def stop_camera(
         from loguru import logger
         logger.warning(f"Database not available, stopping camera {camera_id} directly: {e}")
 
-    # Stop camera (works with or without database)
+    # Stop the per-camera worker task first
+    import main as main_module
+    main_module.stop_camera_worker(camera_id)
+
+    # Stop hardware capture
     await camera_service.stop_camera(camera_id)
 
-    # Update database if available
     if camera is not None:
         try:
             camera.is_active = False
             db.commit()
-        except:
-            pass  # DB update failed, but camera stopped
+        except Exception:
+            pass
 
     return {"status": "stopped", "camera_id": camera_id}
 
@@ -922,9 +948,26 @@ async def process_user_command(command: str, params: dict):
             "timestamp": datetime.utcnow().isoformat()
         }
 
-        # Process command with CommandAgent (use shared instance from main)
-        import main
-        result = await main.command_agent.process_command(command, context)
+        # Route command to the correct per-camera CommandAgent(s)
+        import main as main_module
+        target_camera_id = params.get("camera_id")
+
+        if target_camera_id and target_camera_id in main_module.camera_command_agents:
+            # Command targeted at a specific camera
+            agent = main_module.camera_command_agents[target_camera_id]
+        elif main_module.camera_command_agents:
+            # Broadcast to all active camera agents (use first for response)
+            agent = list(main_module.camera_command_agents.values())[0]
+            # Also send to remaining agents
+            for cam_agent in list(main_module.camera_command_agents.values())[1:]:
+                try:
+                    await cam_agent.process_command(command, context)
+                except Exception:
+                    pass
+        else:
+            agent = main_module.command_agent  # Fallback
+
+        result = await agent.process_command(command, context)
 
         # Send confirmation to user
         await manager.send_system_message("command_processed", {
