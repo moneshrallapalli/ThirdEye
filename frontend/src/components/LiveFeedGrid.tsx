@@ -4,15 +4,23 @@ import { Camera } from '../types';
 interface LiveFeedGridProps {
   cameras: Camera[];
   liveFeedData: Map<number, { frame: string; timestamp: string }>;
+  cols?: 1 | 2 | 3;
   onCameraStart: (cameraId: number) => void;
   onCameraStop: (cameraId: number) => void;
   onCameraAdd: (name: string, location: string, streamUrl: string) => Promise<void>;
   onCameraDelete: (cameraId: number) => Promise<void>;
 }
 
+const colsClass: Record<number, string> = {
+  1: 'grid-cols-1',
+  2: 'grid-cols-1 md:grid-cols-2',
+  3: 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3',
+};
+
 const LiveFeedGrid: React.FC<LiveFeedGridProps> = ({
   cameras,
   liveFeedData,
+  cols = 2,
   onCameraStart,
   onCameraStop,
   onCameraAdd,
@@ -52,18 +60,10 @@ const LiveFeedGrid: React.FC<LiveFeedGridProps> = ({
     }
   };
 
-  const activeCameraCount = cameras.filter((c) => c.is_active).length;
-
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-gray-900">Live Cameras</h2>
-          <p className="text-sm text-gray-500 mt-0.5">
-            {cameras.length} registered{activeCameraCount > 0 && ` · ${activeCameraCount} active`}
-          </p>
-        </div>
+      {/* Add camera button row */}
+      <div className="flex justify-end">
         <button
           onClick={() => { setShowAddModal(true); setAddError(''); }}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors"
@@ -77,130 +77,127 @@ const LiveFeedGrid: React.FC<LiveFeedGridProps> = ({
 
       {/* Empty state */}
       {cameras.length === 0 && (
-        <div className="card">
-          <div className="card-body py-16 text-center">
-            <div className="inline-flex items-center justify-center w-12 h-12 bg-gray-100 rounded-full mb-4">
-              <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
-            </div>
-            <p className="text-sm font-medium text-gray-900 mb-1">No cameras registered</p>
-            <p className="text-sm text-gray-500 mb-4">Add a camera to begin AI-powered monitoring.</p>
-            <button
-              onClick={() => setShowAddModal(true)}
-              className="btn-primary"
-            >
-              Add your first camera
-            </button>
+        <div className="bg-white border border-gray-200 rounded-lg py-20 text-center">
+          <div className="inline-flex items-center justify-center w-12 h-12 bg-gray-100 rounded-full mb-4">
+            <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
           </div>
+          <p className="text-sm font-medium text-gray-900 mb-1">No cameras registered</p>
+          <p className="text-sm text-gray-400 mb-4">Add a camera to start monitoring.</p>
+          <button onClick={() => setShowAddModal(true)} className="btn-primary">
+            Add your first camera
+          </button>
         </div>
       )}
 
       {/* Camera grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {cameras.map((camera) => {
-          const feedData = liveFeedData.get(camera.id);
-          const isDeleting = deletingId === camera.id;
+      {cameras.length > 0 && (
+        <div className={`grid ${colsClass[cols]} gap-4`}>
+          {cameras.map((camera) => {
+            const feedData = liveFeedData.get(camera.id);
+            const isDeleting = deletingId === camera.id;
 
-          return (
-            <div key={camera.id} className="card overflow-hidden">
-              {/* Card header */}
-              <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-                <div className="min-w-0">
-                  <h3 className="text-sm font-medium text-gray-900 truncate">{camera.name}</h3>
-                  <p className="text-xs text-gray-400 truncate">{camera.location || 'No location'}</p>
-                </div>
+            return (
+              <div key={camera.id} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                {/* Card header */}
+                <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-medium text-gray-900 truncate">{camera.name}</h3>
+                    <p className="text-xs text-gray-400 truncate">{camera.location || 'No location'}</p>
+                  </div>
 
-                <div className="flex items-center gap-2 flex-shrink-0 ml-3">
-                  {camera.is_active ? (
-                    <>
-                      <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
-                        <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-                        Active
-                      </span>
-                      <button
-                        onClick={() => onCameraStop(camera.id)}
-                        className="text-xs px-2.5 py-1 bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 rounded-md transition-colors"
-                      >
-                        Stop
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      onClick={() => onCameraStart(camera.id)}
-                      className="text-xs px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
-                    >
-                      Start AI
-                    </button>
-                  )}
-
-                  <button
-                    onClick={() => handleDelete(camera.id)}
-                    disabled={isDeleting}
-                    className="p-1 text-gray-400 hover:text-red-500 rounded-md transition-colors"
-                    title="Delete camera"
-                  >
-                    {isDeleting ? (
-                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                      </svg>
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                    {camera.is_active ? (
+                      <>
+                        <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
+                          <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
+                          Active
+                        </span>
+                        <button
+                          onClick={() => onCameraStop(camera.id)}
+                          className="text-xs px-2.5 py-1 bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 rounded-md transition-colors"
+                        >
+                          Stop
+                        </button>
+                      </>
                     ) : (
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
+                      <button
+                        onClick={() => onCameraStart(camera.id)}
+                        className="text-xs px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
+                      >
+                        Start AI
+                      </button>
                     )}
-                  </button>
+
+                    <button
+                      onClick={() => handleDelete(camera.id)}
+                      disabled={isDeleting}
+                      className="p-1 text-gray-400 hover:text-red-500 rounded transition-colors"
+                      title="Delete camera"
+                    >
+                      {isDeleting ? (
+                        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                        </svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Feed area */}
+                <div className="relative aspect-video bg-gray-100">
+                  {camera.is_active && feedData?.frame ? (
+                    <>
+                      <img
+                        src={`data:image/jpeg;base64,${feedData.frame}`}
+                        alt={`Feed from ${camera.name}`}
+                        className="w-full h-full object-cover"
+                      />
+                      <div className="absolute top-2 right-2 flex items-center gap-1 bg-white/90 text-green-700 text-[10px] px-2 py-0.5 rounded-full border border-green-200">
+                        <span className="w-1 h-1 bg-green-500 rounded-full" />
+                        Live
+                      </div>
+                      <div className="absolute bottom-2 left-2 bg-white/90 text-gray-600 text-[10px] px-2 py-0.5 rounded border border-gray-200">
+                        {new Date(feedData.timestamp).toLocaleTimeString()}
+                      </div>
+                    </>
+                  ) : camera.is_active ? (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <div className="text-center">
+                        <div className="w-7 h-7 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                        <p className="text-xs text-gray-500">Initializing...</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <div className="text-center">
+                        <svg className="w-9 h-9 text-gray-300 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        <p className="text-xs text-gray-400">
+                          {camera.stream_url ? 'Click Start AI to begin' : 'No source configured'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer */}
+                <div className="px-4 py-2 bg-gray-50 border-t border-gray-100 flex items-center justify-between text-[10px] text-gray-400">
+                  <span className="truncate">Source: {camera.stream_url || 'Not set'}</span>
+                  <span className="ml-2 flex-shrink-0">ID {camera.id}</span>
                 </div>
               </div>
-
-              {/* Feed area */}
-              <div className="relative aspect-video bg-gray-100">
-                {camera.is_active && feedData?.frame ? (
-                  <>
-                    <img
-                      src={`data:image/jpeg;base64,${feedData.frame}`}
-                      alt={`Feed from ${camera.name}`}
-                      className="w-full h-full object-cover"
-                    />
-                    <div className="absolute top-2 right-2 flex items-center gap-1 bg-white/90 text-green-700 text-xs px-2 py-0.5 rounded-full border border-green-200">
-                      <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-                      Live
-                    </div>
-                    <div className="absolute bottom-2 left-2 bg-white/90 text-gray-600 text-xs px-2 py-0.5 rounded border border-gray-200">
-                      {new Date(feedData.timestamp).toLocaleTimeString()}
-                    </div>
-                  </>
-                ) : camera.is_active ? (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <div className="text-center">
-                      <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-                      <p className="text-sm text-gray-500">Initializing...</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <div className="text-center">
-                      <svg className="w-10 h-10 text-gray-300 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                      </svg>
-                      <p className="text-sm text-gray-400">
-                        {camera.stream_url ? 'Click Start AI to begin' : 'No source configured'}
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Footer */}
-              <div className="px-4 py-2 bg-gray-50 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400">
-                <span className="truncate">Source: {camera.stream_url || 'Not set'}</span>
-                <span className="ml-2 flex-shrink-0">ID {camera.id}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Add Camera Modal */}
       {showAddModal && (
@@ -210,7 +207,7 @@ const LiveFeedGrid: React.FC<LiveFeedGridProps> = ({
               <h3 className="text-base font-semibold text-gray-900">Add camera</h3>
               <button
                 onClick={() => setShowAddModal(false)}
-                className="p-1 text-gray-400 hover:text-gray-600 rounded-md transition-colors"
+                className="p-1 text-gray-400 hover:text-gray-600 rounded transition-colors"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -267,16 +264,13 @@ const LiveFeedGrid: React.FC<LiveFeedGridProps> = ({
             </div>
 
             <div className="flex gap-2 px-6 pb-6">
-              <button
-                onClick={() => setShowAddModal(false)}
-                className="flex-1 btn-secondary"
-              >
+              <button onClick={() => setShowAddModal(false)} className="flex-1 btn-secondary">
                 Cancel
               </button>
               <button
                 onClick={handleAdd}
                 disabled={adding}
-                className="flex-1 btn-primary flex items-center justify-center gap-2"
+                className="flex-1 btn-primary flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 {adding ? (
                   <>

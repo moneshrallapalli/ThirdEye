@@ -1,272 +1,161 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Camera, Alert, SummaryStats } from '../types';
-import { cameraApi, alertApi, statsApi } from '../services/api';
-import wsService from '../services/websocket';
-import LiveFeedGrid from './LiveFeedGrid';
-import AlertPanel from './AlertPanel';
-import SceneNarration from './SceneNarration';
-import SummaryStatsComponent from './SummaryStats';
-import SystemCommand from './SystemCommand';
-import DailySummary from './DailySummary';
+import { SurveillanceProvider, useSurveillance } from '../contexts/SurveillanceContext';
+import OverviewPage from '../pages/OverviewPage';
+import CamerasPage from '../pages/CamerasPage';
+import AlertsPage from '../pages/AlertsPage';
+import IntelligencePage from '../pages/IntelligencePage';
+import AnalyticsPage from '../pages/AnalyticsPage';
 
-interface NarrationEntry {
-  id: string;
-  timestamp: string;
-  cameraId: number;
-  description: string;
-  significance: number;
-  detections: number;
-  context?: string;
-}
+type Page = 'overview' | 'cameras' | 'alerts' | 'intelligence' | 'analytics';
 
-const tabs = [
-  { id: 'dashboard', label: 'Overview' },
-  { id: 'live', label: 'Live Cameras' },
-  { id: 'alerts', label: 'Alerts' },
-  { id: 'summary', label: 'Analytics' },
+const navItems: { id: Page; label: string; icon: React.ReactNode }[] = [
+  {
+    id: 'overview',
+    label: 'Overview',
+    icon: (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm10 0a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zm10 0a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'cameras',
+    label: 'Live Cameras',
+    icon: (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'alerts',
+    label: 'Alerts',
+    icon: (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+      </svg>
+    ),
+  },
+  {
+    id: 'intelligence',
+    label: 'Intelligence',
+    icon: (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'analytics',
+    label: 'Analytics',
+    icon: (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+      </svg>
+    ),
+  },
 ];
 
-function Dashboard() {
+const AppShell: React.FC = () => {
   const { user, logout } = useAuth();
-  const [cameras, setCameras] = useState<Camera[]>([]);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [stats, setStats] = useState<SummaryStats | null>(null);
-  const [liveFeedData, setLiveFeedData] = useState<Map<number, { frame: string; timestamp: string }>>(new Map());
-  const [narrations, setNarrations] = useState<NarrationEntry[]>([]);
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const { unreadAlerts, cameras, stats } = useSurveillance();
+  const [activePage, setActivePage] = useState<Page>('overview');
 
-  useEffect(() => {
-    loadCameras();
-    loadAlerts();
-    loadStats();
-    const statsInterval = setInterval(loadStats, 30000);
-    return () => clearInterval(statsInterval);
-  }, []);
-
-  useEffect(() => {
-    wsService.connectLiveFeed((update) => {
-      setLiveFeedData((prev) => {
-        const newMap = new Map(prev);
-        newMap.set(update.camera_id, { frame: update.frame, timestamp: update.timestamp });
-        return newMap;
-      });
-    });
-
-    wsService.connectAlerts((alert) => {
-      setAlerts((prev) => [alert, ...prev].slice(0, 50));
-      if (alert.severity === 'CRITICAL') playAlertSound();
-    });
-
-    wsService.connectAnalysis((update) => {
-      const narration: NarrationEntry = {
-        id: `${update.analysis.camera_id}-${Date.now()}`,
-        timestamp: update.timestamp,
-        cameraId: update.analysis.camera_id,
-        description: update.analysis.scene_description,
-        significance: update.analysis.significance,
-        detections: update.analysis.detections,
-        context: update.analysis.context,
-      };
-      setNarrations((prev) => [...prev, narration].slice(-100));
-    });
-
-    wsService.connectSystem((message) => {
-      console.log('System message:', message);
-    });
-
-    return () => wsService.disconnectAll();
-  }, []);
-
-  const loadCameras = async () => {
-    try { setCameras(await cameraApi.getAll()); } catch {}
-  };
-
-  const loadAlerts = async () => {
-    try { setAlerts(await alertApi.getAll({ limit: 50 })); } catch {}
-  };
-
-  const loadStats = async () => {
-    try { setStats(await statsApi.getSummary(24)); } catch {}
-  };
-
-  const handleCameraStart = async (cameraId: number) => {
-    try { await cameraApi.start(cameraId); await loadCameras(); } catch {}
-  };
-
-  const handleCameraStop = async (cameraId: number) => {
-    try {
-      await cameraApi.stop(cameraId);
-      setLiveFeedData((prev) => { const m = new Map(prev); m.delete(cameraId); return m; });
-      await loadCameras();
-    } catch {}
-  };
-
-  const handleCameraAdd = async (name: string, location: string, streamUrl: string) => {
-    await cameraApi.create(name, location, streamUrl);
-    await loadCameras();
-  };
-
-  const handleCameraDelete = async (cameraId: number) => {
-    await cameraApi.delete(cameraId);
-    setLiveFeedData((prev) => { const m = new Map(prev); m.delete(cameraId); return m; });
-    await loadCameras();
-  };
-
-  const handleAcknowledgeAlert = async (alertId: number | string) => {
-    setAlerts((prev) => prev.filter((a) => a.id !== alertId));
-    if (typeof alertId === 'number') {
-      try { await alertApi.acknowledge(alertId); } catch {}
-    }
-  };
-
-  const handleClearAllAlerts = () => setAlerts([]);
-
-  const handleSystemCommand = (command: string) => {
-    wsService.send('/ws/system', { command, params: {} });
-  };
-
-  const playAlertSound = () => {
-    try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = 800;
-      osc.type = 'sine';
-      gain.gain.setValueAtTime(0.3, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.5);
-    } catch {}
-  };
-
-  const unreadAlerts = alerts.filter((a) => !a.is_read).length;
+  const activeCameras = cameras.filter((c) => c.is_active).length;
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-6">
-          <div className="flex items-center justify-between h-14">
-            {/* Logo */}
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 bg-blue-600 rounded-md flex items-center justify-center flex-shrink-0">
-                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                </svg>
-              </div>
-              <span className="text-base font-semibold text-gray-900">ThirdEye</span>
+    <div className="flex h-screen bg-gray-50 overflow-hidden">
+      {/* Sidebar */}
+      <aside className="w-56 bg-gray-900 flex flex-col flex-shrink-0">
+        {/* Logo */}
+        <div className="px-4 py-5 border-b border-gray-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 bg-blue-600 rounded-md flex items-center justify-center flex-shrink-0">
+              <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
             </div>
-
-            {/* Nav tabs */}
-            <nav className="flex items-center gap-1">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`relative px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                    activeTab === tab.id
-                      ? 'bg-gray-100 text-gray-900'
-                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                  }`}
-                >
-                  {tab.label}
-                  {tab.id === 'alerts' && unreadAlerts > 0 && (
-                    <span className="ml-1.5 inline-flex items-center justify-center w-4 h-4 text-[10px] font-bold bg-red-500 text-white rounded-full">
-                      {unreadAlerts > 9 ? '9+' : unreadAlerts}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </nav>
-
-            {/* User + status */}
-            <div className="flex items-center gap-3">
-              {stats && stats.active_cameras > 0 && (
-                <div className="flex items-center gap-1.5 text-xs text-gray-500">
-                  <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-                  {stats.active_cameras} active
-                </div>
-              )}
-              {user && (
-                <span className="text-sm text-gray-500 hidden sm:block">{user.email}</span>
-              )}
-              <button
-                onClick={logout}
-                className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
-              >
-                Sign out
-              </button>
-            </div>
+            <span className="font-semibold text-white text-sm">ThirdEye</span>
           </div>
         </div>
-      </header>
+
+        {/* System status strip */}
+        {(activeCameras > 0 || (stats?.critical_alerts ?? 0) > 0) && (
+          <div className="px-4 py-2 border-b border-gray-800 space-y-1">
+            {activeCameras > 0 && (
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 bg-green-400 rounded-full" />
+                <span className="text-xs text-gray-400">{activeCameras} camera{activeCameras > 1 ? 's' : ''} active</span>
+              </div>
+            )}
+            {(stats?.critical_alerts ?? 0) > 0 && (
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 bg-red-400 rounded-full" />
+                <span className="text-xs text-red-400">{stats!.critical_alerts} critical</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Nav */}
+        <nav className="flex-1 px-3 py-3 space-y-0.5 overflow-y-auto">
+          {navItems.map((item) => {
+            const isActive = activePage === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActivePage(item.id)}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  isActive
+                    ? 'bg-gray-800 text-white'
+                    : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/50'
+                }`}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+                {item.id === 'alerts' && unreadAlerts > 0 && (
+                  <span className="ml-auto inline-flex items-center justify-center w-4 h-4 text-[10px] font-bold bg-red-500 text-white rounded-full">
+                    {unreadAlerts > 9 ? '9+' : unreadAlerts}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* User footer */}
+        <div className="px-4 py-4 border-t border-gray-800">
+          {user && (
+            <p className="text-xs text-gray-500 truncate mb-2" title={user.email}>{user.email}</p>
+          )}
+          <button
+            onClick={logout}
+            className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            Sign out
+          </button>
+        </div>
+      </aside>
 
       {/* Main content */}
-      <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
-        {activeTab === 'dashboard' && (
-          <>
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="lg:col-span-2">
-                <LiveFeedGrid
-                  cameras={cameras}
-                  liveFeedData={liveFeedData}
-                  onCameraStart={handleCameraStart}
-                  onCameraStop={handleCameraStop}
-                  onCameraAdd={handleCameraAdd}
-                  onCameraDelete={handleCameraDelete}
-                />
-              </div>
-              <div>
-                <AlertPanel
-                  alerts={alerts}
-                  onAcknowledge={handleAcknowledgeAlert}
-                  onClearAll={handleClearAllAlerts}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="lg:col-span-2">
-                <SystemCommand onCommand={handleSystemCommand} />
-              </div>
-              <div>
-                <DailySummary stats={stats} />
-              </div>
-            </div>
-
-            <SceneNarration narrations={narrations} />
-          </>
-        )}
-
-        {activeTab === 'live' && (
-          <LiveFeedGrid
-            cameras={cameras}
-            liveFeedData={liveFeedData}
-            onCameraStart={handleCameraStart}
-            onCameraStop={handleCameraStop}
-            onCameraAdd={handleCameraAdd}
-            onCameraDelete={handleCameraDelete}
-          />
-        )}
-
-        {activeTab === 'alerts' && (
-          <div className="max-w-3xl mx-auto">
-            <AlertPanel alerts={alerts} onAcknowledge={handleAcknowledgeAlert} onClearAll={handleClearAllAlerts} />
-          </div>
-        )}
-
-        {activeTab === 'summary' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <SummaryStatsComponent stats={stats} />
-            <SceneNarration narrations={narrations} />
-          </div>
-        )}
-      </main>
+      <div className="flex-1 overflow-y-auto">
+        {activePage === 'overview' && <OverviewPage onNavigate={(p) => setActivePage(p as Page)} />}
+        {activePage === 'cameras' && <CamerasPage />}
+        {activePage === 'alerts' && <AlertsPage />}
+        {activePage === 'intelligence' && <IntelligencePage />}
+        {activePage === 'analytics' && <AnalyticsPage />}
+      </div>
     </div>
+  );
+};
+
+function Dashboard() {
+  return (
+    <SurveillanceProvider>
+      <AppShell />
+    </SurveillanceProvider>
   );
 }
 
