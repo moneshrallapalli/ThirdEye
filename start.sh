@@ -1,8 +1,8 @@
 #!/bin/bash
 
 ###############################################################################
-#                   SENTINTINEL SURVEILLANCE SYSTEM
-#                        START SCRIPT v2.0
+#                      THIRDEYE SURVEILLANCE SYSTEM
+#                          START SCRIPT v2.0
 ###############################################################################
 
 set -e  # Exit on error
@@ -21,8 +21,8 @@ BACKEND_DIR="$SCRIPT_DIR/backend"
 FRONTEND_DIR="$SCRIPT_DIR/frontend"
 
 # Log files
-BACKEND_LOG="/tmp/sentintinel_backend.log"
-FRONTEND_LOG="/tmp/sentintinel_frontend.log"
+BACKEND_LOG="/tmp/thirdeye_backend.log"
+FRONTEND_LOG="/tmp/thirdeye_frontend.log"
 
 ###############################################################################
 # FUNCTIONS
@@ -31,7 +31,7 @@ FRONTEND_LOG="/tmp/sentintinel_frontend.log"
 print_header() {
     echo ""
     echo "╔═══════════════════════════════════════════════════════════════╗"
-    echo "║        🚀 SENTINTINEL SURVEILLANCE SYSTEM STARTUP            ║"
+    echo "║        🚀 THIRDEYE SURVEILLANCE SYSTEM STARTUP            ║"
     echo "╚═══════════════════════════════════════════════════════════════╝"
     echo ""
 }
@@ -245,7 +245,7 @@ if check_command docker; then
         print_success "Docker is running"
 
         # Check if containers are running
-        if docker ps | grep -q "sentintinel_postgres"; then
+        if docker ps | grep -q "thirdeye_postgres"; then
             print_success "PostgreSQL container is running"
         else
             print_step "Starting database containers (postgres + redis)..."
@@ -280,7 +280,7 @@ if [ ! -f "venv/.database_initialized" ]; then
         python seed_admin.py
         if [ $? -eq 0 ]; then
             print_success "Admin user created"
-            print_info "   Email: moneshralapalli@gmail.com"
+            print_info "   Email: moneshrallapalli@gmail.com"
             print_info "   Password: admin123"
         else
             print_warning "Failed to seed admin user (may already exist)"
@@ -330,7 +330,7 @@ cd "$BACKEND_DIR"
 source venv/bin/activate
 nohup python main.py > "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
-echo $BACKEND_PID > /tmp/sentintinel_backend.pid
+echo $BACKEND_PID > /tmp/thirdeye_backend.pid
 print_success "Backend started (PID: $BACKEND_PID)"
 print_info "Backend log: $BACKEND_LOG"
 
@@ -347,7 +347,7 @@ cd "$FRONTEND_DIR"
 export BROWSER=none  # Don't auto-open browser
 nohup npm start > "$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!
-echo $FRONTEND_PID > /tmp/sentintinel_frontend.pid
+echo $FRONTEND_PID > /tmp/thirdeye_frontend.pid
 print_success "Frontend started (PID: $FRONTEND_PID)"
 print_info "Frontend log: $FRONTEND_LOG"
 
@@ -399,12 +399,12 @@ echo "   Backend:   http://localhost:8000"
 echo "   API Docs:  http://localhost:8000/docs"
 echo ""
 echo "🔐 Login Credentials:"
-echo "   Email:     moneshralapalli@gmail.com"
+echo "   Email:     moneshrallapalli@gmail.com"
 echo "   Password:  admin123"
 echo ""
 echo "📊 Process IDs:"
-echo "   Backend:   $BACKEND_PID (PID file: /tmp/sentintinel_backend.pid)"
-echo "   Frontend:  $FRONTEND_PID (PID file: /tmp/sentintinel_frontend.pid)"
+echo "   Backend:   $BACKEND_PID (PID file: /tmp/thirdeye_backend.pid)"
+echo "   Frontend:  $FRONTEND_PID (PID file: /tmp/thirdeye_frontend.pid)"
 echo ""
 echo "📝 Logs:"
 echo "   Backend:   tail -f $BACKEND_LOG"

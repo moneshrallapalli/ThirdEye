@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ###############################################################################
-#                   SENTINTINEL SURVEILLANCE SYSTEM
+#                   THIRDEYE SURVEILLANCE SYSTEM
 #                        STATUS SCRIPT v2.0
 ###############################################################################
 
@@ -31,7 +31,7 @@ print_warning() {
 
 echo ""
 echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║         📊 SENTINTINEL SURVEILLANCE SYSTEM STATUS            ║"
+echo "║         📊 THIRDEYE SURVEILLANCE SYSTEM STATUS            ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -133,20 +133,20 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "📝 LOG FILES"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-if [ -f "/tmp/sentintinel_backend.log" ]; then
-    SIZE=$(du -h /tmp/sentintinel_backend.log | awk '{print $1}')
-    print_info "Backend log: /tmp/sentintinel_backend.log ($SIZE)"
+if [ -f "/tmp/thirdeye_backend.log" ]; then
+    SIZE=$(du -h /tmp/thirdeye_backend.log | awk '{print $1}')
+    print_info "Backend log: /tmp/thirdeye_backend.log ($SIZE)"
     echo "   Last 3 lines:"
-    tail -3 /tmp/sentintinel_backend.log 2>/dev/null | sed 's/^/   /'
+    tail -3 /tmp/thirdeye_backend.log 2>/dev/null | sed 's/^/   /'
 else
     print_warning "Backend log not found"
 fi
 
 echo ""
 
-if [ -f "/tmp/sentintinel_frontend.log" ]; then
-    SIZE=$(du -h /tmp/sentintinel_frontend.log | awk '{print $1}')
-    print_info "Frontend log: /tmp/sentintinel_frontend.log ($SIZE)"
+if [ -f "/tmp/thirdeye_frontend.log" ]; then
+    SIZE=$(du -h /tmp/thirdeye_frontend.log | awk '{print $1}')
+    print_info "Frontend log: /tmp/thirdeye_frontend.log ($SIZE)"
 else
     print_warning "Frontend log not found"
 fi
@@ -161,8 +161,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "⚠️  RECENT ERRORS (Last 5 minutes)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-if [ -f "/tmp/sentintinel_backend.log" ]; then
-    ERRORS=$(grep -i "error\|exception\|failed" /tmp/sentintinel_backend.log 2>/dev/null | tail -5)
+if [ -f "/tmp/thirdeye_backend.log" ]; then
+    ERRORS=$(grep -i "error\|exception\|failed" /tmp/thirdeye_backend.log 2>/dev/null | tail -5)
     if [ -n "$ERRORS" ]; then
         echo "$ERRORS" | sed 's/^/   /'
     else

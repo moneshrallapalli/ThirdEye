@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ###############################################################################
-#                   SENTINTINEL SURVEILLANCE SYSTEM
+#                   THIRDEYE SURVEILLANCE SYSTEM
 #                        RESTART SCRIPT v2.0
 ###############################################################################
 
@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 
 echo ""
 echo "╔═══════════════════════════════════════════════════════════════╗"
-echo "║         🔄 SENTINTINEL SURVEILLANCE SYSTEM RESTART           ║"
+echo "║         🔄 THIRDEYE SURVEILLANCE SYSTEM RESTART           ║"
 echo "╚═══════════════════════════════════════════════════════════════╝"
 echo ""
 

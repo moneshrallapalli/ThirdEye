@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ###############################################################################
-#                   SENTINTINEL SURVEILLANCE SYSTEM
+#                   THIRDEYE SURVEILLANCE SYSTEM
 #                        STOP SCRIPT v2.0
 ###############################################################################
 
@@ -14,8 +14,8 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # PID files
-BACKEND_PID_FILE="/tmp/sentintinel_backend.pid"
-FRONTEND_PID_FILE="/tmp/sentintinel_frontend.pid"
+BACKEND_PID_FILE="/tmp/thirdeye_backend.pid"
+FRONTEND_PID_FILE="/tmp/thirdeye_frontend.pid"
 
 ###############################################################################
 # FUNCTIONS
@@ -24,7 +24,7 @@ FRONTEND_PID_FILE="/tmp/sentintinel_frontend.pid"
 print_header() {
     echo ""
     echo "╔═══════════════════════════════════════════════════════════════╗"
-    echo "║         🛑 SENTINTINEL SURVEILLANCE SYSTEM SHUTDOWN          ║"
+    echo "║         🛑 THIRDEYE SURVEILLANCE SYSTEM SHUTDOWN          ║"
     echo "╚═══════════════════════════════════════════════════════════════╝"
     echo ""
 }
@@ -87,7 +87,7 @@ kill_by_port() {
 
 print_header
 
-print_step "Stopping SentinTinel Surveillance System..."
+print_step "Stopping ThirdEye Surveillance System..."
 echo ""
 
 # Track if anything was stopped
@@ -234,7 +234,7 @@ echo ""
 read -p "Delete log files? (y/n) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    rm -f /tmp/sentintinel_*.log 2>/dev/null
+    rm -f /tmp/thirdeye_*.log 2>/dev/null
     print_success "Log files deleted"
 fi
 
