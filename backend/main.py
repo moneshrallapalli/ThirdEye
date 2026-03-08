@@ -86,6 +86,8 @@ async def _camera_worker(camera_id: int):
 
     logger.info(f"[CAM-{camera_id}] Surveillance worker started")
 
+    consecutive_errors = 0
+
     while True:
         try:
             current_time = datetime.utcnow()
@@ -424,14 +426,23 @@ async def _camera_worker(camera_id: int):
                 critical_events = []
                 logger.info(f"[CAM-{camera_id}] New 2-minute period started")
 
+            consecutive_errors = 0
             await asyncio.sleep(1.0 / settings.CAMERA_FPS)
 
         except asyncio.CancelledError:
             logger.info(f"[CAM-{camera_id}] Worker cancelled cleanly")
             break
         except Exception as e:
-            logger.error(f"[CAM-{camera_id}] Error in worker: {e}")
-            await asyncio.sleep(1)
+            consecutive_errors += 1
+            err_str = str(e)
+            # Back off on rate limit errors to avoid hammering the API
+            if "429" in err_str or "quota" in err_str.lower() or "rate" in err_str.lower():
+                backoff = min(30, 5 * consecutive_errors)
+                logger.warning(f"[CAM-{camera_id}] Rate limit hit, backing off {backoff}s")
+                await asyncio.sleep(backoff)
+            else:
+                logger.error(f"[CAM-{camera_id}] Error in worker: {e}")
+                await asyncio.sleep(min(10, consecutive_errors))
 
 
 # ─────────────────────────────────────────────
@@ -446,12 +457,51 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Database initialization failed (continuing): {e}")
 
+    # Auto-restart cameras that were active before the last shutdown.
+    # Workers are in-memory only and don't survive a process restart, so any
+    # camera still marked is_active=True in the DB needs its worker re-spawned.
+    try:
+        from database import SessionLocal, Camera as CameraModel
+        db = SessionLocal()
+        active_cameras = db.query(CameraModel).filter(CameraModel.is_active == True).all()
+        for cam in active_cameras:
+            try:
+                raw = cam.stream_url or "0"
+                source = int(raw) if raw.strip().lstrip('-').isdigit() else raw
+                success = await camera_service.initialize_camera(cam.id, source, fps=cam.fps)
+                if success:
+                    start_camera_worker(cam.id)
+                    logger.info(f"[STARTUP] Auto-restarted camera {cam.id} ({cam.name})")
+                else:
+                    cam.is_active = False
+                    db.commit()
+                    logger.warning(f"[STARTUP] Could not open camera {cam.id} ({cam.name}), marked inactive")
+            except Exception as cam_err:
+                logger.warning(f"[STARTUP] Error restarting camera {cam.id}: {cam_err}")
+                cam.is_active = False
+                db.commit()
+        db.close()
+    except Exception as e:
+        logger.warning(f"[STARTUP] Auto-restart check failed: {e}")
+
     yield
 
     logger.info("Shutting down — stopping all camera workers...")
     for camera_id in list(camera_workers.keys()):
         stop_camera_worker(camera_id)
     await camera_service.stop_all_cameras()
+
+    # Mark all cameras inactive in DB on clean shutdown
+    try:
+        from database import SessionLocal, Camera as CameraModel
+        db = SessionLocal()
+        db.query(CameraModel).filter(CameraModel.is_active == True).update({"is_active": False})
+        db.commit()
+        db.close()
+        logger.info("All cameras marked inactive in DB")
+    except Exception as e:
+        logger.warning(f"Could not mark cameras inactive on shutdown: {e}")
+
     logger.info("All cameras stopped")
 
 
