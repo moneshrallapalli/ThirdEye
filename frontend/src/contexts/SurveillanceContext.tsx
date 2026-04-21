@@ -23,7 +23,7 @@ interface SurveillanceContextType {
   loadCameras: () => Promise<void>;
   handleCameraStart: (id: number) => Promise<void>;
   handleCameraStop: (id: number) => Promise<void>;
-  handleCameraAdd: (name: string, location: string, streamUrl: string) => Promise<void>;
+  handleCameraAdd: (name: string, location: string, streamUrl: string, tasks?: { command: string; task_type: string; priority?: number }[]) => Promise<void>;
   handleCameraDelete: (id: number) => Promise<void>;
   handleAcknowledgeAlert: (id: number | string) => Promise<void>;
   handleClearAllAlerts: () => void;
@@ -91,7 +91,7 @@ export const SurveillanceProvider: React.FC<{ children: ReactNode }> = ({ childr
   };
 
   const loadAlerts = async () => {
-    try { setAlerts(await alertApi.getAll({ limit: 50 })); } catch {}
+    try { setAlerts(await alertApi.getAll({ limit: 100 })); } catch {}
   };
 
   const loadStats = async () => {
@@ -99,7 +99,14 @@ export const SurveillanceProvider: React.FC<{ children: ReactNode }> = ({ childr
   };
 
   const handleCameraStart = async (id: number) => {
-    try { await cameraApi.start(id); await loadCameras(); } catch {}
+    try {
+      await cameraApi.start(id);
+      await loadCameras();
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || 'Failed to start camera';
+      alert(msg);
+      throw e;
+    }
   };
 
   const handleCameraStop = async (id: number) => {
@@ -110,8 +117,8 @@ export const SurveillanceProvider: React.FC<{ children: ReactNode }> = ({ childr
     } catch {}
   };
 
-  const handleCameraAdd = async (name: string, location: string, streamUrl: string) => {
-    await cameraApi.create(name, location, streamUrl);
+  const handleCameraAdd = async (name: string, location: string, streamUrl: string, tasks?: { command: string; task_type: string; priority?: number }[]) => {
+    await cameraApi.create(name, location, streamUrl, tasks);
     await loadCameras();
   };
 
@@ -123,10 +130,13 @@ export const SurveillanceProvider: React.FC<{ children: ReactNode }> = ({ childr
 
   const handleAcknowledgeAlert = async (id: number | string) => {
     setAlerts((prev) => prev.filter((a) => a.id !== id));
-    if (typeof id === 'number') { try { await alertApi.acknowledge(id); } catch {} }
+    if (typeof id === 'number') { try { await alertApi.delete(id); } catch {} }
   };
 
-  const handleClearAllAlerts = () => setAlerts([]);
+  const handleClearAllAlerts = async () => {
+    setAlerts([]);
+    try { await alertApi.deleteAll(); } catch {}
+  };
 
   const handleSystemCommand = (command: string) => {
     wsService.send('/ws/system', { command, params: {} });

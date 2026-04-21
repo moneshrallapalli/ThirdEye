@@ -113,6 +113,17 @@ export interface SummaryStats {
   };
 }
 
+export interface CameraTask {
+  id: number;
+  camera_id: number;
+  command: string;
+  task_type: string;
+  is_default: boolean;
+  is_active: boolean;
+  priority: number;
+  created_at?: string;
+}
+
 export interface WebSocketMessage {
   type: string;
   timestamp: string;

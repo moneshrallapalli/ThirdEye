@@ -20,32 +20,32 @@ const DailySummary: React.FC<DailySummaryProps> = ({ stats }) => {
   };
 
   const items = [
-    { label: 'Events', value: totalEvents, valueColor: 'text-gray-900' },
-    { label: 'Critical', value: criticalAlerts, valueColor: criticalAlerts > 0 ? 'text-red-600' : 'text-gray-900' },
-    { label: 'Warnings', value: warningAlerts, valueColor: warningAlerts > 0 ? 'text-orange-600' : 'text-gray-900' },
-    { label: 'Info', value: infoAlerts, valueColor: 'text-gray-900' },
-    { label: 'Avg Response', value: formatTime(avgResponseTime), valueColor: 'text-gray-900' },
-    { label: 'Cameras', value: activeCameras, valueColor: activeCameras > 0 ? 'text-green-600' : 'text-gray-900' },
+    { label: 'Events', value: totalEvents, valueColor: 'text-stone-900' },
+    { label: 'Critical', value: criticalAlerts, valueColor: criticalAlerts > 0 ? 'text-red-600' : 'text-stone-900' },
+    { label: 'Warnings', value: warningAlerts, valueColor: warningAlerts > 0 ? 'text-orange-600' : 'text-stone-900' },
+    { label: 'Info', value: infoAlerts, valueColor: 'text-stone-900' },
+    { label: 'Avg Response', value: formatTime(avgResponseTime), valueColor: 'text-stone-900' },
+    { label: 'Cameras', value: activeCameras, valueColor: activeCameras > 0 ? 'text-green-600' : 'text-stone-900' },
   ];
 
   return (
     <div className="card h-full">
       <div className="card-header flex items-center justify-between">
         <div>
-          <h2 className="text-base font-semibold text-gray-900">Today</h2>
-          <p className="text-xs text-gray-400 mt-0.5">Last 24 hours</p>
+          <h2 className="text-base font-semibold text-stone-900">Today</h2>
+          <p className="text-xs text-stone-400 mt-0.5">Last 24 hours</p>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-          <span className="text-xs text-gray-400">Live</span>
+          <span className="text-xs text-stone-400">Live</span>
         </div>
       </div>
 
       <div className="card-body">
         <div className="grid grid-cols-2 gap-3">
           {items.map((item) => (
-            <div key={item.label} className="bg-gray-50 rounded-lg px-3 py-3 border border-gray-100">
-              <p className="text-xs text-gray-500 mb-1">{item.label}</p>
+            <div key={item.label} className="bg-stone-50 rounded-lg px-3 py-3 border border-stone-100">
+              <p className="text-xs text-stone-500 mb-1">{item.label}</p>
               <p className={`text-2xl font-semibold ${item.valueColor}`}>{item.value}</p>
             </div>
           ))}

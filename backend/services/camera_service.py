@@ -6,6 +6,8 @@ import asyncio
 import numpy as np
 from typing import Optional, AsyncGenerator, Dict, Any
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from loguru import logger
 import sys
 import os
 
@@ -22,6 +24,17 @@ class CameraService:
     def __init__(self):
         self.active_cameras: Dict[int, cv2.VideoCapture] = {}
         self.camera_configs: Dict[int, Dict[str, Any]] = {}
+        self._executor = ThreadPoolExecutor(max_workers=4)
+
+    def _open_capture(self, source: Any) -> cv2.VideoCapture:
+        """Blocking call — runs in thread pool."""
+        if isinstance(source, int):
+            cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
+        else:
+            # For RTSP/network streams, set a transport preference and
+            # shorter timeout via environment so OpenCV doesn't hang.
+            cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+        return cap
 
     async def initialize_camera(
         self,
@@ -31,34 +44,50 @@ class CameraService:
         resolution: tuple = None
     ) -> bool:
         """
-        Initialize a camera connection
+        Initialize a camera connection.
 
-        Args:
-            camera_id: Camera ID
-            source: Video source (URL, file path, or device index)
-            fps: Target FPS (defaults to config)
-            resolution: Target resolution (width, height)
-
-        Returns:
-            Success status
+        Runs the blocking cv2.VideoCapture in a thread to avoid stalling
+        the event loop, with a 15-second timeout for network streams.
         """
         try:
-            # Convert numeric strings to int so cv2 treats them as device
-            # indices (e.g. "0" → 0) rather than file paths.
+            # Convert numeric strings to int for device indices.
             if isinstance(source, str) and source.strip().lstrip('-').isdigit():
                 source = int(source)
 
-            # On macOS use AVFoundation backend for webcam indices to avoid
-            # permission and access issues with the default backend.
-            if isinstance(source, int):
-                cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
-            else:
-                cap = cv2.VideoCapture(source)
+            loop = asyncio.get_event_loop()
+            timeout = 15 if isinstance(source, str) else 10
+
+            try:
+                cap = await asyncio.wait_for(
+                    loop.run_in_executor(self._executor, self._open_capture, source),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"[CAM-{camera_id}] Timed out connecting to {source} after {timeout}s")
+                raise RuntimeError(f"Connection timed out after {timeout}s")
 
             if not cap.isOpened():
-                return False
+                # Try reading one frame to surface the real error
+                # (OpenCV often logs the reason to stderr)
+                cap.release()
+                logger.error(f"[CAM-{camera_id}] Failed to open source: {source}")
+                raise RuntimeError(f"Could not open video source: {source}")
 
-            # Set resolution if specified
+            # Verify we can actually read a frame.
+            # On macOS the sensor often needs a few warm-up reads before it
+            # returns valid data, so retry up to 10 times with a short delay.
+            ret = False
+            for attempt in range(10):
+                ret, _ = cap.read()
+                if ret:
+                    break
+                await asyncio.sleep(0.3)
+            if not ret:
+                cap.release()
+                logger.error(f"[CAM-{camera_id}] Source opened but cannot read frames: {source}")
+                raise RuntimeError(f"Source opened but cannot read frames (check credentials or stream status)")
+
+            # Set resolution
             if resolution:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
@@ -66,7 +95,6 @@ class CameraService:
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, settings.VIDEO_RESOLUTION_WIDTH)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, settings.VIDEO_RESOLUTION_HEIGHT)
 
-            # Store camera
             self.active_cameras[camera_id] = cap
             self.camera_configs[camera_id] = {
                 "source": source,
@@ -75,11 +103,14 @@ class CameraService:
                 "initialized_at": datetime.utcnow()
             }
 
+            logger.info(f"[CAM-{camera_id}] Initialized: {source}")
             return True
 
+        except RuntimeError:
+            raise
         except Exception as e:
-            print(f"Error initializing camera {camera_id}: {e}")
-            return False
+            logger.error(f"[CAM-{camera_id}] Error initializing: {e}")
+            raise RuntimeError(f"Camera initialization failed: {e}")
 
     async def capture_frame(self, camera_id: int) -> Optional[np.ndarray]:
         """

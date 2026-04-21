@@ -4,59 +4,249 @@
 
 @layer base {
   body {
-    @apply bg-gray-50 text-gray-900;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    background-color: #FAF9F7;
+    color: #1A1714;
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 15px;
+    font-weight: 400;
+    line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.01em;
   }
 
-  code {
-    font-family: Menlo, Monaco, Consolas, 'Courier New', monospace;
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', 'DM Sans', sans-serif;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+  }
+
+  h1 { font-size: 2rem; font-weight: 700; }
+  h2 { font-size: 1.5rem; }
+  h3 { font-size: 1.2rem; }
+
+  /* Apply display font to heading-like text using utility class */
+  .font-display {
+    font-family: 'Space Grotesk', 'DM Sans', sans-serif !important;
+    letter-spacing: -0.03em;
+  }
+
+  /* Circuit board traces */
+  .ct-trace {
+    fill: none;
+    stroke: #1A1714;
+    stroke-width: 0.75;
+    stroke-linecap: square;
+    stroke-dasharray: 80;
+  }
+  .ct-dot {
+    fill: #1A1714;
+  }
+
+  /* Staggered delays — each group draws in sequence */
+  .ct-a     { animation: circuit-draw 5s ease-in-out 0s    infinite; }
+  .ct-b     { animation: circuit-draw 5s ease-in-out 0.7s  infinite; }
+  .ct-c     { animation: circuit-draw 5s ease-in-out 1.4s  infinite; }
+  .ct-d     { animation: circuit-draw 5s ease-in-out 2.1s  infinite; }
+
+  .ct-dot-b { animation: circuit-dot  5s ease-in-out 0.7s  infinite; }
+  .ct-dot-c { animation: circuit-dot  5s ease-in-out 1.4s  infinite; }
+  .ct-dot-d { animation: circuit-dot  5s ease-in-out 2.1s  infinite; }
+
+  /* Trace draws from eye edge toward iris center */
+  @keyframes circuit-draw {
+    0%    { stroke-dashoffset: 80; opacity: 0;    }
+    8%    { opacity: 0.28; }
+    52%   { stroke-dashoffset: 0;  opacity: 0.22; }
+    78%   { stroke-dashoffset: 0;  opacity: 0.22; }
+    98%   { stroke-dashoffset: 0;  opacity: 0;    }
+    100%  { stroke-dashoffset: 80; opacity: 0;    }
+  }
+
+  /* Junction dot fades in after its trace arrives */
+  @keyframes circuit-dot {
+    0%, 38%  { opacity: 0;    }
+    50%      { opacity: 0.45; }
+    78%      { opacity: 0.35; }
+    98%      { opacity: 0;    }
+    100%     { opacity: 0;    }
+  }
+
+  /* Eye logo animations */
+  .iris-orbit {
+    transform-origin: 55px 45px;
+    animation: iris-orbit 3s linear infinite;
+  }
+
+  .eye-pupil-group {
+    animation: eye-look 7s ease-in-out infinite;
+  }
+
+  .eye-brow {
+    animation: eyebrow-raise 5s ease-in-out infinite;
+  }
+
+  .eyelid-top {
+    transform-box: fill-box;
+    transform-origin: top;
+    animation: eyelid-close-top 5s ease-in-out infinite;
+  }
+
+  .eyelid-bottom {
+    transform-box: fill-box;
+    transform-origin: bottom;
+    animation: eyelid-close-bottom 5s ease-in-out infinite;
+  }
+
+  .iris-ping {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: iris-ping 3s ease-out 1.5s infinite;
+  }
+
+  @keyframes iris-orbit {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+
+  /* Human eye — glances with natural pauses */
+  @keyframes eye-look {
+    0%,  10% { transform: translate(0px,   0px); }
+    22%      { transform: translate(7px,  -2px); }
+    35%      { transform: translate(7px,  -2px); }
+    47%      { transform: translate(-6px,  3px); }
+    59%      { transform: translate(-6px,  3px); }
+    70%      { transform: translate(3px,   6px); }
+    80%      { transform: translate(3px,   6px); }
+    92%, 100%{ transform: translate(0px,   0px); }
+  }
+
+  /* Eyebrow rises just before blink */
+  @keyframes eyebrow-raise {
+    0%,  74% { transform: translateY(0px);  }
+    81%      { transform: translateY(-5px); }
+    92%, 100%{ transform: translateY(0px);  }
+  }
+
+  /* Upper eyelid descends from top */
+  @keyframes eyelid-close-top {
+    0%,  76% { transform: scaleY(0); }
+    82%      { transform: scaleY(1); }
+    89%      { transform: scaleY(0); }
+    100%     { transform: scaleY(0); }
+  }
+
+  /* Lower eyelid rises from bottom */
+  @keyframes eyelid-close-bottom {
+    0%,  76% { transform: scaleY(0); }
+    82%      { transform: scaleY(1); }
+    89%      { transform: scaleY(0); }
+    100%     { transform: scaleY(0); }
+  }
+
+  @keyframes iris-ping {
+    0%   { transform: scale(1);   opacity: 0.55; }
+    100% { transform: scale(3.2); opacity: 0;    }
+  }
+
+  /* Whistling notes — float up and fade when eye is politely not watching */
+  @keyframes whistle-float {
+    0%   { transform: translateY(0px);   opacity: 0;    }
+    12%  { opacity: 0.75; }
+    80%  { opacity: 0.55; }
+    100% { transform: translateY(-22px); opacity: 0;    }
+  }
+
+  .whistle-note {
+    animation: whistle-float 1.9s ease-out infinite;
+  }
+
+  .whistle-note-2 {
+    animation: whistle-float 1.9s ease-out 0.95s infinite;
+  }
+
+  code, pre, kbd {
+    font-family: 'JetBrains Mono', Menlo, Monaco, Consolas, monospace;
+    font-size: 0.875em;
   }
 }
 
 @layer components {
   .card {
-    @apply bg-white rounded-lg border border-gray-200 shadow-sm;
+    @apply bg-white rounded-lg border border-stone-200;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
   }
 
   .card-header {
-    @apply px-5 py-4 border-b border-gray-100;
+    @apply px-5 py-4 border-b border-stone-100;
   }
 
   .card-body {
     @apply p-5;
   }
 
+  /* Primary button — dark warm, no blue */
   .btn-primary {
-    @apply px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors;
+    @apply px-4 py-2 text-white text-sm font-medium rounded-md transition-colors;
+    background-color: #1A1714;
+  }
+  .btn-primary:hover {
+    background-color: #2C2724;
   }
 
+  /* Secondary button */
   .btn-secondary {
-    @apply px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 text-sm font-medium border border-gray-200 rounded-md transition-colors;
+    @apply px-4 py-2 bg-white text-sm font-medium border rounded-md transition-colors;
+    color: #4A4340;
+    border-color: #E8E3DB;
+  }
+  .btn-secondary:hover {
+    background-color: #F2EFE9;
   }
 
+  /* Badge base */
   .badge {
     @apply px-2 py-0.5 rounded text-xs font-medium;
   }
 
+  /* Severity badges — muted, minimal color */
   .badge-critical {
-    @apply bg-red-50 text-red-700 border border-red-200;
+    color: #7C2D2D;
+    background-color: #FDF2F2;
+    border: 1px solid #F0D0D0;
   }
 
   .badge-warning {
-    @apply bg-orange-50 text-orange-700 border border-orange-200;
+    color: #78490A;
+    background-color: #FDFAF2;
+    border: 1px solid #EDD9A3;
   }
 
   .badge-info {
-    @apply bg-blue-50 text-blue-700 border border-blue-200;
+    color: #4A4340;
+    background-color: #F2EFE9;
+    border: 1px solid #E8E3DB;
   }
 
   .badge-system {
-    @apply bg-gray-100 text-gray-600 border border-gray-200;
+    color: #8C837A;
+    background-color: #F2EFE9;
+    border: 1px solid #E8E3DB;
   }
 
+  /* Input — warm borders, no blue ring */
   .input {
-    @apply w-full px-3 py-2 text-sm text-gray-900 bg-white border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition;
+    @apply w-full px-3 py-2 text-sm bg-white border rounded-md transition;
+    color: #1A1714;
+    border-color: #E8E3DB;
+    outline: none;
+  }
+  .input::placeholder {
+    color: #B5ADA6;
+  }
+  .input:focus {
+    border-color: #8C837A;
+    box-shadow: 0 0 0 2px rgba(140,131,122,0.15);
   }
 }

@@ -3,9 +3,11 @@ API routes for SentinTinel Surveillance System
 """
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import List, Optional
 from datetime import datetime, timedelta
 from loguru import logger
+import anthropic
 import base64
 import cv2
 import numpy as np
@@ -14,7 +16,8 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import get_db, User, Camera, Event, Detection, Alert, ContextPattern, AlertSeverity
+from database import get_db, User, Camera, CameraTask, Event, Detection, Alert, ContextPattern, AlertSeverity
+from camera_presets import get_preset_tasks, get_all_presets
 from api.websocket import manager
 from agents import VisionAgent, ContextAgent
 from services import camera_service
@@ -403,7 +406,7 @@ async def create_camera(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Create a new camera
+    Create a new camera with user-selected tasks.
     """
     camera = Camera(
         name=camera_data.get("name", "Camera"),
@@ -412,6 +415,23 @@ async def create_camera(
         is_active=False
     )
     db.add(camera)
+    db.flush()
+
+    # Create tasks the user explicitly selected during setup
+    for task_data in camera_data.get("tasks", []):
+        command = task_data.get("command", "").strip()
+        if not command:
+            continue
+        task = CameraTask(
+            camera_id=camera.id,
+            command=command,
+            task_type=task_data.get("task_type", "custom"),
+            priority=task_data.get("priority", 1),
+            is_default=task_data.get("is_default", False),
+            is_active=True,
+        )
+        db.add(task)
+
     db.commit()
     db.refresh(camera)
     return camera
@@ -476,11 +496,14 @@ async def start_camera(
         logger.warning(f"Database not available, starting camera {camera_id} directly: {e}")
 
     # Initialize camera hardware capture
-    success = await camera_service.initialize_camera(
-        camera_id,
-        stream_url,
-        fps=fps
-    )
+    try:
+        success = await camera_service.initialize_camera(
+            camera_id,
+            stream_url,
+            fps=fps
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     if success:
         if camera is not None:
@@ -537,6 +560,612 @@ async def stop_camera(
             pass
 
     return {"status": "stopped", "camera_id": camera_id}
+
+
+# ─────────────────────────────────────────────
+# Live Prompting – ask a question about a camera's current frame
+# ─────────────────────────────────────────────
+
+@router.post("/cameras/{camera_id}/query")
+async def query_camera_live(
+    camera_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Ask a real-time question about a camera's current frame.
+    Body: { "question": "Is there anyone on the porch?" }
+    """
+    question = (body.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    if not camera.is_active:
+        raise HTTPException(status_code=400, detail="Camera is not active")
+
+    frame = await camera_service.capture_frame(camera_id)
+    if frame is None:
+        raise HTTPException(status_code=503, detail="Could not capture frame from camera")
+
+    analysis = await vision_agent.analyze_frame(
+        frame=frame,
+        camera_id=camera_id,
+        user_query=question,
+    )
+
+    # Encode the analysed frame so the frontend can show it alongside the answer
+    _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    frame_b64 = base64.b64encode(buf).decode('utf-8')
+
+    return {
+        "camera_id": camera_id,
+        "question": question,
+        "answer": analysis.get("query_details") or analysis.get("scene_description", ""),
+        "scene_description": analysis.get("scene_description", ""),
+        "detections": analysis.get("detections", []),
+        "significance": analysis.get("significance", 0),
+        "query_match": analysis.get("query_match", False),
+        "query_confidence": analysis.get("query_confidence", 0),
+        "frame": frame_b64,
+        "timestamp": analysis.get("timestamp", ""),
+    }
+
+
+# ─────────────────────────────────────────────
+# Historical Query – ask questions about past footage
+# ─────────────────────────────────────────────
+
+@router.post("/cameras/{camera_id}/history")
+async def query_camera_history(
+    camera_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Ask a question about a camera's past recordings.
+
+    Body: {
+      "question": "Was there anyone at the door between 2pm and 4pm?",
+      "start_time": "2026-03-08T14:00:00",   // optional, defaults to 24h ago
+      "end_time":   "2026-03-08T16:00:00",    // optional, defaults to now
+      "limit":      200                        // max events to consider
+    }
+    """
+    question = (body.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    # Parse time range
+    now = datetime.utcnow()
+    try:
+        start_time = datetime.fromisoformat(body["start_time"]) if body.get("start_time") else now - timedelta(hours=24)
+    except (ValueError, TypeError):
+        start_time = now - timedelta(hours=24)
+    try:
+        end_time = datetime.fromisoformat(body["end_time"]) if body.get("end_time") else now
+    except (ValueError, TypeError):
+        end_time = now
+
+    limit = min(int(body.get("limit", 200)), 500)
+
+    # ── Fetch events with detections ────────────────────────────────────
+    from database import Event, Detection
+
+    events = (
+        db.query(Event)
+        .filter(
+            Event.camera_id == camera_id,
+            Event.timestamp >= start_time,
+            Event.timestamp <= end_time,
+        )
+        .order_by(Event.timestamp.asc())
+        .limit(limit)
+        .all()
+    )
+
+    if not events:
+        return {
+            "camera_id": camera_id,
+            "question": question,
+            "answer": f"No recorded events found for this camera between {start_time.isoformat()} and {end_time.isoformat()}.",
+            "events_analysed": 0,
+            "time_range": {"start": start_time.isoformat(), "end": end_time.isoformat()},
+            "relevant_frames": [],
+        }
+
+    # ── Build a text timeline for Claude ────────────────────────────────
+    timeline_entries = []
+    frame_index = {}  # timestamp_str -> frame_url
+
+    event_frames_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "event_frames")
+
+    for ev in events:
+        ts = ev.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        desc = ev.scene_description or ev.description or ""
+        activity = ""
+        detected = []
+        if ev.event_metadata and isinstance(ev.event_metadata, dict):
+            activity = ev.event_metadata.get("activity", "")
+            for d in ev.event_metadata.get("detections", []):
+                label = d.get("label", d.get("object_label", ""))
+                if label:
+                    detected.append(label)
+
+        entry = f"[{ts}] {desc}"
+        if activity:
+            entry += f" | Activity: {activity}"
+        if detected:
+            entry += f" | Detected: {', '.join(detected)}"
+        if ev.significance_score and ev.significance_score >= 50:
+            entry += f" | Significance: {ev.significance_score}/100"
+        timeline_entries.append(entry)
+
+        # Find the corresponding frame file on disk
+        ts_prefix = ev.timestamp.strftime("%Y%m%d_%H%M%S")
+        frame_pattern = f"camera{camera_id}_{ts_prefix}"
+        # Store for later lookup
+        frame_index[ts] = {
+            "event_id": ev.id,
+            "timestamp": ev.timestamp.isoformat(),
+            "scene_description": ev.scene_description or "",
+            "significance": ev.significance_score or 0,
+            "frame_pattern": frame_pattern,
+        }
+
+    timeline_text = "\n".join(timeline_entries)
+
+    # ── Ask Claude to answer the question from the timeline ─────────────
+    client = anthropic.Anthropic(api_key=settings.CLAUDE_API_KEY)
+
+    system_prompt = (
+        "You are an AI surveillance analyst. You are given a chronological timeline of scene "
+        "observations from a security camera. Each entry includes a timestamp, scene description, "
+        "detected objects, and activity.\n\n"
+        "Answer the user's question based ONLY on this timeline data. Be specific about times, "
+        "people, objects, and activities. If something was not observed, say so clearly.\n\n"
+        "Keep your answer concise and factual. Reference specific timestamps when relevant."
+    )
+
+    import asyncio
+    answer = None
+    try:
+        response = await asyncio.to_thread(
+            client.messages.create,
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            system=system_prompt,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Camera: {camera.name} ({camera.location or 'unknown location'})\n"
+                        f"Time range: {start_time.strftime('%Y-%m-%d %H:%M:%S')} to {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"Total observations: {len(events)}\n\n"
+                        f"--- TIMELINE ---\n{timeline_text}\n--- END ---\n\n"
+                        f"Question: {question}"
+                    ),
+                }
+            ],
+        )
+        answer = response.content[0].text
+    except Exception as exc:
+        logger.warning(f"Claude history synthesis failed: {exc}")
+        # Fallback: return the raw timeline entries so the user still gets data
+        answer = (
+            f"AI synthesis unavailable. Found {len(events)} event(s) in the requested time range.\n\n"
+            + "\n".join(timeline_entries[:20])
+        )
+
+    # ── Find relevant frames to show alongside the answer ───────────────
+    # Pick frames with highest significance + first and last
+    scored = sorted(events, key=lambda e: e.significance_score or 0, reverse=True)
+    top_events = scored[:5]
+    # Also include first and last for context
+    if events[0] not in top_events:
+        top_events.append(events[0])
+    if events[-1] not in top_events:
+        top_events.append(events[-1])
+    top_events.sort(key=lambda e: e.timestamp)
+
+    relevant_frames = []
+    for ev in top_events:
+        ts_prefix = ev.timestamp.strftime("%Y%m%d_%H%M%S")
+        # Find matching file on disk
+        frame_url = None
+        try:
+            for f in os.listdir(event_frames_dir):
+                if f.startswith(f"camera{camera_id}_{ts_prefix}"):
+                    frame_url = f"/event_frames/{f}"
+                    break
+        except OSError:
+            pass
+
+        relevant_frames.append({
+            "event_id": ev.id,
+            "timestamp": ev.timestamp.isoformat(),
+            "scene_description": ev.scene_description or "",
+            "significance": ev.significance_score or 0,
+            "frame_url": frame_url,
+        })
+
+    return {
+        "camera_id": camera_id,
+        "question": question,
+        "answer": answer,
+        "events_analysed": len(events),
+        "time_range": {"start": start_time.isoformat(), "end": end_time.isoformat()},
+        "relevant_frames": relevant_frames,
+    }
+
+
+# ─────────────────────────────────────────────
+# Cross-Camera Scene Search
+# ─────────────────────────────────────────────
+
+@router.post("/search/scenes")
+async def search_scenes(
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Search for a described scene across ALL cameras and return exact timestamps.
+
+    Body: {
+      "query": "person wearing red near the entrance",
+      "start_time": "2026-03-20T00:00:00",  // optional, defaults to 7 days ago
+      "end_time":   "2026-03-27T23:59:59",  // optional, defaults to now
+      "camera_ids": [1, 2],                 // optional, defaults to all cameras
+      "limit": 50
+    }
+    """
+    from sqlalchemy import or_
+
+    query_text = (body.get("query") or "").strip()
+    if not query_text:
+        raise HTTPException(status_code=400, detail="query is required")
+
+    now = datetime.utcnow()
+    try:
+        start_time = datetime.fromisoformat(body["start_time"]) if body.get("start_time") else now - timedelta(days=7)
+    except (ValueError, TypeError):
+        start_time = now - timedelta(days=7)
+    try:
+        end_time = datetime.fromisoformat(body["end_time"]) if body.get("end_time") else now
+    except (ValueError, TypeError):
+        end_time = now
+
+    camera_ids_filter = body.get("camera_ids") or None
+    limit = min(int(body.get("limit", 50)), 200)
+
+    # ── 1. ChromaDB semantic search (all cameras) ────────────────────────
+    chroma_event_ids: set = set()
+    chroma_scores: dict = {}  # event_id -> similarity (0–1, higher = better)
+
+    try:
+        collection_count = context_agent.scene_collection.count()
+        if collection_count > 0:
+            similar = await context_agent.find_similar_events(
+                scene_description=query_text,
+                n_results=min(50, collection_count),
+                camera_id=None,  # None = search all cameras
+            )
+            for match in similar:
+                meta = match.get("metadata", {})
+                eid = meta.get("event_id")
+                if eid is not None:
+                    eid = int(eid)
+                    chroma_event_ids.add(eid)
+                    dist = match.get("distance") or 1.0
+                    chroma_scores[eid] = round(max(0.0, 1.0 - float(dist)), 3)
+    except Exception as exc:
+        logger.warning(f"ChromaDB search error (falling back to DB-only): {exc}")
+
+    # ── 2. DB text search across all cameras ────────────────────────────
+    base_q = db.query(Event).filter(
+        Event.timestamp >= start_time,
+        Event.timestamp <= end_time,
+    )
+    if camera_ids_filter:
+        base_q = base_q.filter(Event.camera_id.in_(camera_ids_filter))
+
+    search_term = f"%{query_text}%"
+    text_events = (
+        base_q.filter(
+            or_(
+                Event.scene_description.ilike(search_term),
+                Event.description.ilike(search_term),
+            )
+        )
+        .order_by(Event.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+
+    # ── 3. Fetch DB rows for ChromaDB hits (filtered by time/camera) ─────
+    chroma_db_events = []
+    if chroma_event_ids:
+        chroma_q = db.query(Event).filter(
+            Event.id.in_(chroma_event_ids),
+            Event.timestamp >= start_time,
+            Event.timestamp <= end_time,
+        )
+        if camera_ids_filter:
+            chroma_q = chroma_q.filter(Event.camera_id.in_(camera_ids_filter))
+        chroma_db_events = chroma_q.all()
+
+    # ── 4. Merge & deduplicate ───────────────────────────────────────────
+    events_map = {ev.id: ev for ev in chroma_db_events}
+    for ev in text_events:
+        events_map[ev.id] = ev
+
+    if not events_map:
+        return {
+            "query": query_text,
+            "answer": f"No matching scenes found for '{query_text}' between {start_time.strftime('%Y-%m-%d %H:%M')} and {end_time.strftime('%Y-%m-%d %H:%M')}.",
+            "total_matches": 0,
+            "time_range": {"start": start_time.isoformat(), "end": end_time.isoformat()},
+            "matches": [],
+        }
+
+    all_events = sorted(events_map.values(), key=lambda e: e.timestamp)
+
+    # ── 5. Load camera metadata ─────────────────────────────────────────
+    cam_ids = {e.camera_id for e in all_events}
+    cameras_map = {c.id: c for c in db.query(Camera).filter(Camera.id.in_(cam_ids)).all()}
+
+    # ── 6. Build timeline text for Claude ────────────────────────────────
+    timeline_lines = []
+    for ev in all_events:
+        cam = cameras_map.get(ev.camera_id)
+        cam_label = (
+            f"{cam.name} — {cam.location}" if cam and cam.location
+            else (cam.name if cam else f"Camera {ev.camera_id}")
+        )
+        ts = ev.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        desc = ev.scene_description or ev.description or "(no description)"
+        sim = chroma_scores.get(ev.id)
+        sim_tag = f" [similarity {sim:.0%}]" if sim is not None else ""
+        sig_tag = f" | significance {ev.significance_score}/100" if ev.significance_score and ev.significance_score >= 50 else ""
+        timeline_lines.append(f"[{ts}] {cam_label}: {desc}{sim_tag}{sig_tag}")
+
+    # Cap the timeline at 150 lines to stay within prompt limits
+    timeline_text = "\n".join(timeline_lines[:150])
+
+    # ── 7. Ask Claude to synthesise the answer ───────────────────────────
+    client = anthropic.Anthropic(api_key=settings.CLAUDE_API_KEY)
+    system_prompt = (
+        "You are an AI surveillance analyst for a multi-camera security system. "
+        "You are given a chronological timeline of scene observations from multiple cameras. "
+        "Each line contains a timestamp, the camera name, a scene description, and optionally "
+        "a semantic similarity score showing how closely the observation matches the user's query.\n\n"
+        "Your job: answer the user's query by identifying EXACTLY when and on which camera "
+        "the described scene occurred. If there are multiple occurrences list all of them with "
+        "precise timestamps. If nothing matches, say so clearly. Be concise and factual."
+    )
+
+    import asyncio
+    cam_names = ", ".join(c.name for c in cameras_map.values()) if cameras_map else "all cameras"
+    answer = None
+    try:
+        llm_response = await asyncio.to_thread(
+            client.messages.create,
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            system=system_prompt,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Query: {query_text}\n"
+                    f"Time range searched: {start_time.strftime('%Y-%m-%d %H:%M')} → {end_time.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"Cameras searched: {cam_names}\n"
+                    f"Total observations in timeline: {len(timeline_lines)}\n\n"
+                    f"--- TIMELINE ---\n{timeline_text}\n--- END ---\n\n"
+                    "When did this happen, and on which camera?"
+                ),
+            }],
+        )
+        answer = llm_response.content[0].text
+    except Exception as exc:
+        logger.warning(f"Claude synthesis failed: {exc}")
+        # Build a plain-text summary from the timeline as fallback
+        if timeline_lines:
+            answer = (
+                f"Found {len(all_events)} event(s) matching '{query_text}'. "
+                f"AI synthesis unavailable — see matching events below for exact timestamps and cameras."
+            )
+        else:
+            answer = f"No matching scenes found for '{query_text}'."
+
+    # ── 8. Build structured matches list ────────────────────────────────
+    event_frames_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "event_frames")
+    matches = []
+    for ev in all_events[:limit]:
+        cam = cameras_map.get(ev.camera_id)
+        frame_url = None
+        try:
+            ts_prefix = ev.timestamp.strftime("%Y%m%d_%H%M%S")
+            for fname in os.listdir(event_frames_dir):
+                if fname.startswith(f"camera{ev.camera_id}_{ts_prefix}"):
+                    frame_url = f"/event_frames/{fname}"
+                    break
+        except Exception:
+            pass
+
+        matches.append({
+            "event_id": ev.id,
+            "camera_id": ev.camera_id,
+            "camera_name": cam.name if cam else f"Camera {ev.camera_id}",
+            "camera_location": cam.location if cam else None,
+            "timestamp": ev.timestamp.isoformat(),
+            "scene_description": ev.scene_description or ev.description or "",
+            "significance": ev.significance_score or 0,
+            "is_anomaly": bool(ev.is_anomaly),
+            "semantic_similarity": chroma_scores.get(ev.id),
+            "frame_url": frame_url,
+            "source": "semantic" if ev.id in chroma_event_ids else "text",
+        })
+
+    # Best semantic matches first, then chronological
+    matches.sort(key=lambda m: (-(m["semantic_similarity"] or 0), m["timestamp"]))
+
+    return {
+        "query": query_text,
+        "answer": answer,
+        "total_matches": len(matches),
+        "time_range": {"start": start_time.isoformat(), "end": end_time.isoformat()},
+        "matches": matches,
+    }
+
+
+# ─────────────────────────────────────────────
+# Camera Task endpoints
+# ─────────────────────────────────────────────
+
+@router.get("/camera-presets")
+async def list_presets():
+    """Return all available location presets."""
+    return get_all_presets()
+
+
+@router.get("/cameras/{camera_id}/tasks")
+async def get_camera_tasks(
+    camera_id: int,
+    db: Session = Depends(get_db),
+):
+    """Get all tasks for a camera."""
+    camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    tasks = (
+        db.query(CameraTask)
+        .filter(CameraTask.camera_id == camera_id)
+        .order_by(CameraTask.priority.desc(), CameraTask.created_at)
+        .all()
+    )
+    return [
+        {
+            "id": t.id,
+            "camera_id": t.camera_id,
+            "command": t.command,
+            "task_type": t.task_type,
+            "is_default": t.is_default,
+            "is_active": t.is_active,
+            "priority": t.priority,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        }
+        for t in tasks
+    ]
+
+
+@router.post("/cameras/{camera_id}/tasks")
+async def add_camera_task(
+    camera_id: int,
+    task_data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Add a new monitoring task to a camera."""
+    camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    command = task_data.get("command", "").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="Task command is required")
+
+    task = CameraTask(
+        camera_id=camera_id,
+        command=command,
+        task_type=task_data.get("task_type", "custom"),
+        is_default=False,
+        is_active=True,
+        priority=task_data.get("priority", 1),
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    return {
+        "id": task.id,
+        "camera_id": task.camera_id,
+        "command": task.command,
+        "task_type": task.task_type,
+        "is_default": task.is_default,
+        "is_active": task.is_active,
+        "priority": task.priority,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+    }
+
+
+@router.put("/cameras/{camera_id}/tasks/{task_id}")
+async def update_camera_task(
+    camera_id: int,
+    task_id: int,
+    task_data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Toggle a task active/inactive or update its command."""
+    task = (
+        db.query(CameraTask)
+        .filter(CameraTask.id == task_id, CameraTask.camera_id == camera_id)
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if "is_active" in task_data:
+        task.is_active = task_data["is_active"]
+    if "command" in task_data:
+        task.command = task_data["command"]
+    if "priority" in task_data:
+        task.priority = task_data["priority"]
+
+    db.commit()
+    db.refresh(task)
+
+    return {
+        "id": task.id,
+        "camera_id": task.camera_id,
+        "command": task.command,
+        "task_type": task.task_type,
+        "is_default": task.is_default,
+        "is_active": task.is_active,
+        "priority": task.priority,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+    }
+
+
+@router.delete("/cameras/{camera_id}/tasks/{task_id}")
+async def delete_camera_task(
+    camera_id: int,
+    task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Remove a task from a camera."""
+    task = (
+        db.query(CameraTask)
+        .filter(CameraTask.id == task_id, CameraTask.camera_id == camera_id)
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    db.delete(task)
+    db.commit()
+    return {"status": "deleted", "task_id": task_id}
 
 
 @router.get("/events")
@@ -695,6 +1324,20 @@ async def get_recent_events_with_images(
         return {"events": [], "error": str(e)}
 
 
+@router.post("/alerts/acknowledge-all")
+async def acknowledge_all_alerts(db: Session = Depends(get_db)):
+    """
+    Mark all unread alerts as acknowledged
+    """
+    now = datetime.utcnow()
+    unread = db.query(Alert).filter(Alert.is_read == False).all()
+    for alert in unread:
+        alert.is_read = True
+        alert.acknowledged_at = now
+    db.commit()
+    return {"acknowledged": len(unread)}
+
+
 @router.post("/alerts/{alert_id}/acknowledge")
 async def acknowledge_alert(alert_id: int, db: Session = Depends(get_db)):
     """
@@ -717,6 +1360,29 @@ async def acknowledge_alert(alert_id: int, db: Session = Depends(get_db)):
     return alert
 
 
+@router.delete("/alerts")
+async def delete_all_alerts(db: Session = Depends(get_db)):
+    """
+    Permanently delete all alerts (used by Clear All on the frontend)
+    """
+    count = db.query(Alert).delete()
+    db.commit()
+    return {"deleted": count}
+
+
+@router.delete("/alerts/{alert_id}")
+async def delete_alert(alert_id: int, db: Session = Depends(get_db)):
+    """
+    Permanently delete a single alert (used by Dismiss on the frontend)
+    """
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    db.delete(alert)
+    db.commit()
+    return {"deleted": alert_id}
+
+
 @router.get("/stats/summary")
 async def get_summary_stats(
     hours: int = 24,
@@ -736,6 +1402,10 @@ async def get_summary_stats(
         warning_alerts = db.query(Alert).filter(
             Alert.timestamp >= since,
             Alert.severity == AlertSeverity.WARNING
+        ).count()
+        info_alerts = db.query(Alert).filter(
+            Alert.timestamp >= since,
+            Alert.severity == AlertSeverity.INFO
         ).count()
 
         # Average response time
@@ -757,7 +1427,7 @@ async def get_summary_stats(
             "total_events": total_events,
             "critical_alerts": critical_alerts,
             "warning_alerts": warning_alerts,
-            "info_alerts": total_events - critical_alerts - warning_alerts,
+            "info_alerts": info_alerts,
             "avg_response_time_seconds": int(avg_response_time),
             "active_cameras": camera_service.get_active_camera_count(),
             "context_stats": chroma_stats

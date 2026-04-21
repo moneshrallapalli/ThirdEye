@@ -70,15 +70,15 @@ const SystemCommand: React.FC<SystemCommandProps> = ({ onCommand }) => {
   const responseStyle = (type: string) => {
     if (type === 'error') return 'bg-red-50 border-red-200 text-red-700';
     if (type === 'alert') return 'bg-orange-50 border-orange-200 text-orange-700';
-    if (type === 'info') return 'bg-blue-50 border-blue-200 text-blue-700';
-    return 'bg-gray-50 border-gray-200 text-gray-700';
+    if (type === 'info') return 'bg-stone-50 border-stone-200 text-stone-700';
+    return 'bg-stone-50 border-stone-200 text-stone-700';
   };
 
   return (
     <div className="card">
       <div className="card-header">
-        <h2 className="text-base font-semibold text-gray-900">AI Command</h2>
-        <p className="text-xs text-gray-400 mt-0.5">Give the AI instructions for what to monitor</p>
+        <h2 className="text-base font-semibold text-stone-900">AI Command</h2>
+        <p className="text-xs text-stone-400 mt-0.5">Give the AI instructions for what to monitor</p>
       </div>
       <div className="card-body space-y-3">
         <form onSubmit={handleSubmit}>
@@ -116,7 +116,7 @@ const SystemCommand: React.FC<SystemCommandProps> = ({ onCommand }) => {
                 onCommand(cmd.command);
               }}
               disabled={isProcessing}
-              className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-md transition-colors disabled:opacity-50"
+              className="text-xs px-3 py-1.5 bg-stone-100 hover:bg-stone-200 text-stone-600 rounded-md transition-colors disabled:opacity-50"
             >
               {cmd.label}
             </button>
@@ -124,8 +124,8 @@ const SystemCommand: React.FC<SystemCommandProps> = ({ onCommand }) => {
         </div>
 
         {responses.length > 0 && (
-          <div className="pt-3 border-t border-gray-100">
-            <p className="text-xs font-medium text-gray-500 mb-2">Responses</p>
+          <div className="pt-3 border-t border-stone-100">
+            <p className="text-xs font-medium text-stone-500 mb-2">Responses</p>
             <div className="space-y-2 max-h-40 overflow-y-auto">
               {responses.map((resp, i) => (
                 <div key={i} className={`text-xs p-2 rounded-md border ${responseStyle(resp.type)}`}>
@@ -140,11 +140,11 @@ const SystemCommand: React.FC<SystemCommandProps> = ({ onCommand }) => {
         )}
 
         {history.length > 0 && (
-          <div className="pt-3 border-t border-gray-100">
-            <p className="text-xs font-medium text-gray-500 mb-2">Command history</p>
+          <div className="pt-3 border-t border-stone-100">
+            <p className="text-xs font-medium text-stone-500 mb-2">Command history</p>
             <div className="space-y-1 max-h-24 overflow-y-auto">
               {history.slice(-5).reverse().map((cmd, i) => (
-                <p key={i} className="text-xs text-gray-400 font-mono truncate">
+                <p key={i} className="text-xs text-stone-400 font-mono truncate">
                   &gt; {cmd}
                 </p>
               ))}

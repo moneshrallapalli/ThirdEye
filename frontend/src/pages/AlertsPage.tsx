@@ -2,14 +2,15 @@ import React, { useState } from 'react';
 import { useSurveillance } from '../contexts/SurveillanceContext';
 import { Alert, AlertSeverity } from '../types';
 import { formatDistanceToNow } from 'date-fns';
+import { utcToDate } from '../utils/time';
 
 type Filter = 'all' | 'critical' | 'warning' | 'info';
 
 const severityBar: Record<string, string> = {
-  CRITICAL: 'bg-red-500',
+  CRITICAL: 'bg-red-400',
   WARNING: 'bg-orange-400',
-  INFO: 'bg-blue-400',
-  SYSTEM: 'bg-gray-400',
+  INFO: 'bg-stone-400',
+  SYSTEM: 'bg-stone-400',
 };
 
 const severityBadge: Record<string, string> = {
@@ -24,8 +25,8 @@ const AlertRow: React.FC<{ alert: Alert; onDismiss: (id: number | string) => voi
   const hasEvidence = !!(alert.frame_url || alert.frame_base64);
 
   return (
-    <div className={`flex gap-3 px-5 py-4 hover:bg-gray-50 transition-colors ${alert.is_read ? 'opacity-60' : ''}`}>
-      <div className={`w-0.5 flex-shrink-0 self-stretch rounded-full ${severityBar[alert.severity] ?? 'bg-gray-300'}`} />
+    <div className={`flex gap-3 px-5 py-4 hover:bg-stone-50 transition-colors ${alert.is_read ? 'opacity-60' : ''}`}>
+      <div className={`w-0.5 flex-shrink-0 self-stretch rounded-full ${severityBar[alert.severity] ?? 'bg-stone-300'}`} />
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-3 mb-1">
           <div className="flex items-center gap-2 flex-wrap">
@@ -33,24 +34,24 @@ const AlertRow: React.FC<{ alert: Alert; onDismiss: (id: number | string) => voi
               {alert.severity}
             </span>
             {alert.camera_id !== undefined && (
-              <span className="text-xs text-gray-400">Camera {alert.camera_id}</span>
+              <span className="text-xs text-stone-400">Camera {alert.camera_id}</span>
             )}
             {alert.significance !== undefined && (
-              <span className="text-xs text-gray-400">{alert.significance}% confidence</span>
+              <span className="text-xs text-stone-400">{alert.significance}% confidence</span>
             )}
           </div>
-          <span className="text-xs text-gray-400 flex-shrink-0">
-            {formatDistanceToNow(new Date(alert.timestamp), { addSuffix: true })}
+          <span className="text-xs text-stone-400 flex-shrink-0">
+            {formatDistanceToNow(utcToDate(alert.timestamp), { addSuffix: true })}
           </span>
         </div>
 
-        <p className="text-sm font-medium text-gray-800 mb-1">{alert.title}</p>
-        <p className="text-xs text-gray-500 whitespace-pre-line mb-2">{alert.message}</p>
+        <p className="text-sm font-medium text-stone-800 mb-1">{alert.title}</p>
+        <p className="text-xs text-stone-500 whitespace-pre-line mb-2">{alert.message}</p>
 
         {alert.detected_objects && alert.detected_objects.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-2">
             {alert.detected_objects.map((obj, i) => (
-              <span key={i} className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">
+              <span key={i} className="text-[10px] px-1.5 py-0.5 bg-stone-100 text-stone-600 rounded">
                 {obj}
               </span>
             ))}
@@ -61,21 +62,21 @@ const AlertRow: React.FC<{ alert: Alert; onDismiss: (id: number | string) => voi
           {hasEvidence && (
             <button
               onClick={() => setShowEvidence(!showEvidence)}
-              className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+              className="text-xs text-stone-700 hover:text-stone-900 font-medium"
             >
               {showEvidence ? 'Hide evidence' : 'View evidence'}
             </button>
           )}
           <button
             onClick={() => onDismiss(alert.id)}
-            className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+            className="text-xs text-stone-400 hover:text-stone-600 transition-colors"
           >
             Dismiss
           </button>
         </div>
 
         {showEvidence && hasEvidence && (
-          <div className="mt-2 rounded-md overflow-hidden border border-gray-200">
+          <div className="mt-2 rounded-md overflow-hidden border border-stone-200">
             <img
               src={
                 alert.frame_base64
@@ -83,7 +84,7 @@ const AlertRow: React.FC<{ alert: Alert; onDismiss: (id: number | string) => voi
                   : `http://localhost:8000${alert.frame_url}`
               }
               alt="Evidence"
-              className="w-full max-h-64 object-contain bg-gray-50"
+              className="w-full max-h-64 object-contain bg-stone-50"
               onError={(e) => { e.currentTarget.style.display = 'none'; }}
             />
           </div>
@@ -93,9 +94,9 @@ const AlertRow: React.FC<{ alert: Alert; onDismiss: (id: number | string) => voi
   );
 };
 
-const AlertsPage: React.FC = () => {
+const AlertsPage: React.FC<{ initialFilter?: string }> = ({ initialFilter }) => {
   const { alerts, handleAcknowledgeAlert, handleClearAllAlerts } = useSurveillance();
-  const [filter, setFilter] = useState<Filter>('all');
+  const [filter, setFilter] = useState<Filter>((initialFilter as Filter) ?? 'all');
 
   const filtered = filter === 'all'
     ? alerts
@@ -120,11 +121,11 @@ const AlertsPage: React.FC = () => {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Alerts</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{alerts.length} notification{alerts.length !== 1 ? 's' : ''}</p>
+          <h1 className="font-display text-xl font-semibold text-stone-900">Alerts</h1>
+          <p className="text-sm text-stone-500 mt-0.5">{alerts.length} notification{alerts.length !== 1 ? 's' : ''}</p>
         </div>
         {alerts.length > 0 && (
-          <button onClick={handleClearAllAlerts} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">
+          <button onClick={handleClearAllAlerts} className="text-sm text-stone-400 hover:text-stone-600 transition-colors">
             Clear all
           </button>
         )}
@@ -138,13 +139,13 @@ const AlertsPage: React.FC = () => {
             onClick={() => setFilter(tab.id)}
             className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
               filter === tab.id
-                ? 'bg-gray-900 text-white'
-                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                ? 'bg-stone-900 text-white'
+                : 'text-stone-500 hover:text-stone-700 hover:bg-stone-100'
             }`}
           >
             {tab.label}
             {counts[tab.id] > 0 && (
-              <span className={`ml-1.5 text-xs ${filter === tab.id ? 'text-gray-300' : 'text-gray-400'}`}>
+              <span className={`ml-1.5 text-xs ${filter === tab.id ? 'text-stone-300' : 'text-stone-400'}`}>
                 {counts[tab.id]}
               </span>
             )}
@@ -153,18 +154,18 @@ const AlertsPage: React.FC = () => {
       </div>
 
       {/* Alert list */}
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+      <div className="bg-white border border-stone-200 rounded-lg overflow-hidden">
         {filtered.length === 0 ? (
           <div className="py-16 text-center">
-            <div className="inline-flex items-center justify-center w-10 h-10 bg-gray-100 rounded-full mb-3">
-              <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="inline-flex items-center justify-center w-10 h-10 bg-stone-100 rounded-full mb-3">
+              <svg className="w-5 h-5 text-stone-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
-            <p className="text-sm text-gray-500">No {filter === 'all' ? '' : filter} alerts</p>
+            <p className="text-sm text-stone-500">No {filter === 'all' ? '' : filter} alerts</p>
           </div>
         ) : (
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-stone-100">
             {filtered.map((alert) => (
               <AlertRow key={alert.id} alert={alert} onDismiss={handleAcknowledgeAlert} />
             ))}

@@ -15,10 +15,10 @@ function App() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-stone-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="inline-block w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mb-3" />
-          <p className="text-sm text-gray-500">Loading...</p>
+          <div className="inline-block w-8 h-8 border-2 border-stone-400 border-t-transparent rounded-full animate-spin mb-3" />
+          <p className="text-sm text-stone-500">Loading...</p>
         </div>
       </div>
     );

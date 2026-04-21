@@ -30,14 +30,14 @@ const VerifyEmail: React.FC = () => {
   }, [searchParams, navigate]);
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+    <div className="min-h-screen flex items-center justify-center px-4" style={{ background: '#FAF9F7' }}>
       <div className="w-full max-w-sm">
-        <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-8 text-center">
+        <div className="bg-white border border-stone-200 rounded-xl shadow-sm p-8 text-center">
           {status === 'loading' && (
             <>
-              <div className="inline-block w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mb-4" />
-              <h2 className="text-lg font-semibold text-gray-900 mb-1">Verifying your email</h2>
-              <p className="text-sm text-gray-500">Please wait a moment...</p>
+              <div className="inline-block w-8 h-8 border-2 border-stone-700 border-t-transparent rounded-full animate-spin mb-4" />
+              <h2 className="text-lg font-semibold text-stone-900 mb-1">Verifying your email</h2>
+              <p className="text-sm text-stone-500">Please wait a moment...</p>
             </>
           )}
 
@@ -48,9 +48,9 @@ const VerifyEmail: React.FC = () => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <h2 className="text-lg font-semibold text-gray-900 mb-2">Email verified</h2>
-              <p className="text-sm text-gray-500 mb-4">{message}</p>
-              <p className="text-xs text-gray-400">Redirecting to login...</p>
+              <h2 className="text-lg font-semibold text-stone-900 mb-2">Email verified</h2>
+              <p className="text-sm text-stone-500 mb-4">{message}</p>
+              <p className="text-xs text-stone-400">Redirecting to login...</p>
             </>
           )}
 
@@ -61,7 +61,7 @@ const VerifyEmail: React.FC = () => {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </div>
-              <h2 className="text-lg font-semibold text-gray-900 mb-2">Verification failed</h2>
+              <h2 className="text-lg font-semibold text-stone-900 mb-2">Verification failed</h2>
               <p className="text-sm text-red-600 mb-6">{message}</p>
               <Link to="/login" className="btn-primary inline-block">
                 Go to login

@@ -61,6 +61,7 @@ class Camera(Base):
     # Relationships
     events = relationship("Event", back_populates="camera", cascade="all, delete-orphan")
     detections = relationship("Detection", back_populates="camera", cascade="all, delete-orphan")
+    tasks = relationship("CameraTask", back_populates="camera", cascade="all, delete-orphan")
 
 
 class Event(Base):
@@ -146,6 +147,23 @@ class ContextPattern(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+
+
+class CameraTask(Base):
+    """Persistent monitoring tasks assigned to cameras"""
+    __tablename__ = "camera_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="CASCADE"), nullable=False)
+    command = Column(Text, nullable=False)  # Natural language: "Watch for fire or smoke"
+    task_type = Column(String(100))  # fire_detection, intrusion_detection, custom, etc.
+    is_default = Column(Boolean, default=False)  # True = auto-assigned from location preset
+    is_active = Column(Boolean, default=True)
+    priority = Column(Integer, default=1)  # Higher = more important
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    camera = relationship("Camera", back_populates="tasks")
 
 
 class SystemLog(Base):
