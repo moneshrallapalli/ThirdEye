@@ -104,14 +104,14 @@ const AskAIDrawer: React.FC<AskAIDrawerProps> = ({ camera, liveFrame, onClose })
       {/* Drawer */}
       <aside
         className="w-full max-w-md flex flex-col shadow-2xl"
-        style={{ background: '#FAF9F7', borderLeft: '1px solid #E8E3DB' }}
+        style={{ background: 'var(--bg-page)', borderLeft: '1px solid var(--border)' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-5 py-4 flex items-start justify-between" style={{ borderBottom: '1px solid #E8E3DB' }}>
+        <div className="px-5 py-4 flex items-start justify-between" style={{ borderBottom: '1px solid var(--border)' }}>
           <div className="flex items-center gap-3 min-w-0">
             {/* Thumb */}
-            <div className="w-14 h-9 rounded overflow-hidden flex-shrink-0" style={{ background: '#F2EFE9' }}>
+            <div className="w-14 h-9 rounded overflow-hidden flex-shrink-0" style={{ background: 'var(--bg-surface-subtle)' }}>
               {camera.is_active && liveFrame ? (
                 <img src={`data:image/jpeg;base64,${liveFrame}`} alt="" className="w-full h-full object-cover" />
               ) : (
@@ -145,7 +145,7 @@ const AskAIDrawer: React.FC<AskAIDrawerProps> = ({ camera, liveFrame, onClose })
 
         {/* Mode tabs */}
         <div className="px-5 pt-3 flex items-center justify-between">
-          <div className="inline-flex rounded-md p-0.5" style={{ background: '#F2EFE9' }}>
+          <div className="inline-flex rounded-md p-0.5" style={{ background: 'var(--bg-surface-subtle)' }}>
             <button
               onClick={() => setMode('live')}
               className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
@@ -180,7 +180,7 @@ const AskAIDrawer: React.FC<AskAIDrawerProps> = ({ camera, liveFrame, onClose })
               <div className="text-center max-w-xs">
                 <div
                   className="inline-flex items-center justify-center w-10 h-10 rounded-full mb-3"
-                  style={{ background: '#F2EFE9' }}
+                  style={{ background: 'var(--bg-surface-subtle)' }}
                 >
                   <svg className="w-5 h-5 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path
@@ -213,7 +213,7 @@ const AskAIDrawer: React.FC<AskAIDrawerProps> = ({ camera, liveFrame, onClose })
                 <div key={i} className="flex justify-end">
                   <div
                     className="max-w-[85%] rounded-lg px-3 py-2 text-sm"
-                    style={{ background: '#1A1714', color: '#FAF9F7' }}
+                    style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
                   >
                     {m.text}
                   </div>
@@ -272,7 +272,7 @@ const AskAIDrawer: React.FC<AskAIDrawerProps> = ({ camera, liveFrame, onClose })
         </div>
 
         {/* Input */}
-        <div className="px-5 py-4" style={{ borderTop: '1px solid #E8E3DB' }}>
+        <div className="px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
           <form
             onSubmit={(e) => {
               e.preventDefault();

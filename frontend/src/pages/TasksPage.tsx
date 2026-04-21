@@ -258,10 +258,10 @@ const TasksPage: React.FC = () => {
                     setNewCommand('');
                     if (isCollapsed) toggleCollapse(camera.id);
                   }}
-                  className="flex-shrink-0 flex items-center gap-1 text-xs px-2.5 py-1.5 text-white rounded-md transition-colors"
-                  style={{ background: '#1A1714' }}
-                  onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = '#2C2724')}
-                  onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = '#1A1714')}
+                  className="flex-shrink-0 flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md transition-colors"
+                  style={{ background: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
+                  onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = 'var(--btn-primary-bg-hover)')}
+                  onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = 'var(--btn-primary-bg)')}
                 >
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
