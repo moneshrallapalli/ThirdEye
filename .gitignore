@@ -80,3 +80,17 @@ recordings/
 *.avi
 *.mov
 backend/event_frames
+
+# Iteration notes / dev-log cruft at repo root
+# (Keep real docs with neutral names, or move them under /docs)
+/*_FIX.md
+/*_FIXED.md
+/*_FIXES.md
+/*_COMPLETE.md
+/*_SUMMARY.md
+/TEST_*.md
+/FIXED_*.md
+/BUG_*.md
+/WHATS_*.txt
+/*_INSTRUCTIONS.txt
+/*_FIX_STEPS.txt

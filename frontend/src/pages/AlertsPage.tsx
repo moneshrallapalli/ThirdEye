@@ -117,7 +117,7 @@ const AlertsPage: React.FC<{ initialFilter?: string }> = ({ initialFilter }) => 
   ];
 
   return (
-    <div className="p-6 space-y-5 max-w-3xl">
+    <div className="p-6 space-y-5 max-w-5xl">
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
@@ -144,11 +144,9 @@ const AlertsPage: React.FC<{ initialFilter?: string }> = ({ initialFilter }) => 
             }`}
           >
             {tab.label}
-            {counts[tab.id] > 0 && (
-              <span className={`ml-1.5 text-xs ${filter === tab.id ? 'text-stone-300' : 'text-stone-400'}`}>
-                {counts[tab.id]}
-              </span>
-            )}
+            <span className={`ml-1.5 text-xs ${filter === tab.id ? 'text-stone-300' : 'text-stone-400'}`}>
+              {counts[tab.id]}
+            </span>
           </button>
         ))}
       </div>
