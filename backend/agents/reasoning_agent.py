@@ -120,7 +120,7 @@ CRITICAL: If user asked about "person leaving" and person was present but is now
             # Call Claude API
             response = await asyncio.to_thread(
                 self.client.messages.create,
-                model="claude-3-haiku-20240307",  # Claude 3 Haiku (fast and available)
+                model="claude-haiku-4-5-20251001",
                 max_tokens=2000,
                 temperature=0.3,  # Lower temp for more consistent reasoning
                 system=system_prompt,
@@ -135,7 +135,7 @@ CRITICAL: If user asked about "person leaving" and person was present but is now
             
             # Add metadata
             decision['timestamp'] = datetime.utcnow().isoformat()
-            decision['model_used'] = 'claude-3-5-sonnet'
+            decision['model_used'] = 'claude-haiku-4-5'
             
             return decision
             

@@ -252,8 +252,20 @@ For OBJECT DETECTION queries:
                 analysis['significance'] = 50
             if 'detections' not in analysis or not isinstance(analysis['detections'], list):
                 analysis['detections'] = []
+            else:
+                # Claude occasionally returns strings instead of dicts; coerce.
+                analysis['detections'] = [
+                    d if isinstance(d, dict)
+                    else {"object_type": "object", "label": str(d), "confidence": 0.0}
+                    for d in analysis['detections']
+                ]
             if 'alerts' not in analysis or not isinstance(analysis['alerts'], list):
                 analysis['alerts'] = []
+            else:
+                analysis['alerts'] = [
+                    a if isinstance(a, dict) else {"severity": "INFO", "message": str(a)}
+                    for a in analysis['alerts']
+                ]
             if 'activity' not in analysis:
                 analysis['activity'] = analysis.get('scene_description', '')[:100]
 
