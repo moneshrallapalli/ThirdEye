@@ -710,8 +710,14 @@ async def query_camera_history(
         }
 
     # ── Build a text timeline for Claude ────────────────────────────────
+    # Each entry is prefixed with a stable numeric id (id=<event_id>) so
+    # Claude can tell us exactly which events it used when forming the
+    # answer. We'll parse those ids back out to attach the matching frames
+    # as evidence (previously we picked frames by global significance,
+    # which produced thumbnails that did not correspond to the cited times
+    # in the answer).
     timeline_entries = []
-    frame_index = {}  # timestamp_str -> frame_url
+    events_by_id: dict[int, Event] = {}
 
     event_frames_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "event_frames")
 
@@ -727,7 +733,7 @@ async def query_camera_history(
                 if label:
                     detected.append(label)
 
-        entry = f"[{ts}] {desc}"
+        entry = f"[id={ev.id}][{ts}] {desc}"
         if activity:
             entry += f" | Activity: {activity}"
         if detected:
@@ -735,18 +741,7 @@ async def query_camera_history(
         if ev.significance_score and ev.significance_score >= 50:
             entry += f" | Significance: {ev.significance_score}/100"
         timeline_entries.append(entry)
-
-        # Find the corresponding frame file on disk
-        ts_prefix = ev.timestamp.strftime("%Y%m%d_%H%M%S")
-        frame_pattern = f"camera{camera_id}_{ts_prefix}"
-        # Store for later lookup
-        frame_index[ts] = {
-            "event_id": ev.id,
-            "timestamp": ev.timestamp.isoformat(),
-            "scene_description": ev.scene_description or "",
-            "significance": ev.significance_score or 0,
-            "frame_pattern": frame_pattern,
-        }
+        events_by_id[ev.id] = ev
 
     timeline_text = "\n".join(timeline_entries)
 
@@ -755,13 +750,19 @@ async def query_camera_history(
 
     system_prompt = (
         "You are an AI surveillance analyst. You are given a chronological timeline of scene "
-        "observations from a security camera. Each entry includes a timestamp, scene description, "
-        "detected objects, and activity.\n\n"
+        "observations from a security camera. Each entry starts with an event id in the form "
+        "'[id=NNN]' followed by a timestamp.\n\n"
         f"All timestamps in the timeline are in {tz_label}. When you reference times in your "
         f"answer, use that same timezone and format (12-hour with AM/PM).\n\n"
         "Answer the user's question based ONLY on this timeline data. Be specific about times, "
-        "people, objects, and activities. If something was not observed, say so clearly.\n\n"
-        "Keep your answer concise and factual. Reference specific timestamps when relevant."
+        "people, objects, and activities. If something was not observed, say so clearly. Keep the "
+        "answer concise and factual.\n\n"
+        "IMPORTANT — at the VERY END of your response, on its own line, include a single tag "
+        "listing the event ids that directly support your answer (most relevant first, max 6), "
+        "like this:\n"
+        "<cited_event_ids>42,44,49</cited_event_ids>\n"
+        "If no events support the answer, emit <cited_event_ids></cited_event_ids>. Never include "
+        "ids that are not in the timeline. Do not mention this tag in the prose above it."
     )
 
     import asyncio
@@ -794,21 +795,98 @@ async def query_camera_history(
             + "\n".join(timeline_entries[:20])
         )
 
-    # ── Find relevant frames to show alongside the answer ───────────────
-    # Pick frames with highest significance + first and last
-    scored = sorted(events, key=lambda e: e.significance_score or 0, reverse=True)
-    top_events = scored[:5]
-    # Also include first and last for context
-    if events[0] not in top_events:
-        top_events.append(events[0])
-    if events[-1] not in top_events:
-        top_events.append(events[-1])
-    top_events.sort(key=lambda e: e.timestamp)
+    # ── Parse the <cited_event_ids>...</cited_event_ids> tag ────────────
+    import re as _re
+    cited_ids: list[int] = []
+    if answer:
+        m = _re.search(r"<cited_event_ids>\s*([0-9,\s]*)\s*</cited_event_ids>", answer)
+        if m:
+            raw = m.group(1)
+            for tok in raw.split(","):
+                tok = tok.strip()
+                if tok.isdigit():
+                    eid = int(tok)
+                    if eid in events_by_id and eid not in cited_ids:
+                        cited_ids.append(eid)
+            # Strip the machine-readable tag from the user-visible answer
+            answer = _re.sub(
+                r"\s*<cited_event_ids>[\s0-9,]*</cited_event_ids>\s*$",
+                "",
+                answer,
+            ).rstrip()
+
+    # ── Build the evidence frame list ───────────────────────────────────
+    # Priority order:
+    #   1. Events Claude explicitly cited (kept in Claude's ranking order,
+    #      which already has most-relevant first)
+    #   2. If we have fewer than 2 cited events (or parsing failed), fall
+    #      back to keyword-overlap ranking against the question — this
+    #      keeps evidence aligned with what the user ACTUALLY asked rather
+    #      than with global scene significance.
+    evidence_events: list[Event] = [events_by_id[i] for i in cited_ids]
+
+    if len(evidence_events) < 2:
+        q_stopwords = {
+            "the", "a", "an", "is", "are", "was", "were", "did", "do", "does",
+            "you", "your", "i", "see", "seen", "saw", "any", "of", "in", "on",
+            "at", "to", "for", "and", "or", "with", "by", "as", "be", "been",
+            "have", "has", "had", "what", "when", "who", "where", "why", "how",
+            "today", "yesterday", "show", "me", "tell", "about", "my",
+        }
+        q_tokens = {
+            t for t in _re.findall(r"[a-zA-Z]{3,}", question.lower())
+            if t not in q_stopwords
+        }
+
+        def _overlap_score(ev: Event) -> tuple[int, int]:
+            haystack_parts = [
+                (ev.scene_description or ""),
+                (ev.description or ""),
+            ]
+            if ev.event_metadata and isinstance(ev.event_metadata, dict):
+                haystack_parts.append(str(ev.event_metadata.get("activity", "")))
+                for d in ev.event_metadata.get("detections", []):
+                    label = d.get("label", d.get("object_label", ""))
+                    if label:
+                        haystack_parts.append(str(label))
+            haystack = " ".join(haystack_parts).lower()
+            hay_tokens = set(_re.findall(r"[a-zA-Z]{3,}", haystack))
+            overlap = len(q_tokens & hay_tokens) if q_tokens else 0
+            # Break ties with significance so at equal relevance we still
+            # prefer the more significant moment.
+            return (overlap, ev.significance_score or 0)
+
+        ranked = sorted(events, key=_overlap_score, reverse=True)
+        seen_ids = {ev.id for ev in evidence_events}
+        for ev in ranked:
+            if len(evidence_events) >= 5:
+                break
+            # Only use the fallback-ranked event if it actually matches
+            # SOMETHING in the question — otherwise we'd be back to
+            # unrelated thumbnails. If nothing matches the question at all
+            # (overlap 0 across the board), surface the highest-significance
+            # moment so the user still gets visual context.
+            overlap = _overlap_score(ev)[0]
+            if ev.id in seen_ids:
+                continue
+            if overlap > 0 or not evidence_events:
+                evidence_events.append(ev)
+                seen_ids.add(ev.id)
+
+        # If we still have nothing (no question-token matches at all and
+        # no citations), fall back to the old behaviour: top significance.
+        if not evidence_events:
+            evidence_events = sorted(
+                events, key=lambda e: e.significance_score or 0, reverse=True
+            )[:3]
+
+    # Stable chronological display order for the UI (oldest → newest) so
+    # the thumbnails read like a mini-timeline of the cited moments.
+    evidence_events.sort(key=lambda e: e.timestamp)
 
     relevant_frames = []
-    for ev in top_events:
+    for ev in evidence_events:
         ts_prefix = ev.timestamp.strftime("%Y%m%d_%H%M%S")
-        # Find matching file on disk
         frame_url = None
         try:
             for f in os.listdir(event_frames_dir):
@@ -1279,7 +1357,11 @@ async def get_alerts(
                 "scene_description": meta.get("scene_description"),
                 "activity": meta.get("activity"),
                 "reasoning": meta.get("reasoning"),
-                "alert_type": meta.get("alert_type", "trigger_match"),
+                # IMPORTANT: do NOT default this to "trigger_match" — legacy
+                # alerts (pre-metadata) would then impersonate user-triggered
+                # ones and slip past the Alerts page filter, inflating counts.
+                # Only surface the value if it's actually present in metadata.
+                "alert_type": meta.get("alert_type"),
             })
         return result
     except Exception as e:

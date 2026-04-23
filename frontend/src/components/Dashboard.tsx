@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { SurveillanceProvider, useSurveillance } from '../contexts/SurveillanceContext';
+import { AlertSeverity } from '../types';
 import OverviewPage from '../pages/OverviewPage';
 import CamerasPage from '../pages/CamerasPage';
 import TasksPage from '../pages/TasksPage';
@@ -71,7 +72,7 @@ const navItems: { id: Page; label: string; icon: React.ReactNode }[] = [
 const AppShell: React.FC = () => {
   const { user, logout } = useAuth();
   const { theme, toggle: toggleTheme } = useTheme();
-  const { unreadAlerts, cameras, stats } = useSurveillance();
+  const { unreadAlerts, cameras, alerts } = useSurveillance();
   const [activePage, setActivePage] = useState<Page>('overview');
   const [alertFilter, setAlertFilter] = useState<string | undefined>(undefined);
 
@@ -82,6 +83,18 @@ const AppShell: React.FC = () => {
   };
 
   const activeCameras = cameras.filter((c) => c.is_active).length;
+
+  // Use the exact same source + filter as the Alerts page so the sidebar's
+  // "N critical" badge always matches the page's "Critical (N)" tab. We
+  // previously read `stats.critical_alerts` from /api/stats/summary, which
+  // counted (a) every severity=CRITICAL row (including legacy generic ones)
+  // over (b) only the last 24h — two mismatches versus the Alerts page.
+  const userTriggeredAlerts = alerts.filter(
+    (a) => !!(a.user_query || a.alert_type === 'trigger_match')
+  );
+  const criticalCount = userTriggeredAlerts.filter(
+    (a) => a.severity === AlertSeverity.CRITICAL
+  ).length;
 
   const [isMouseInSidebar, setIsMouseInSidebar] = useState(false);
   const [pupilOffset, setPupilOffset] = useState({ x: 0, y: 0 });
@@ -240,7 +253,7 @@ const AppShell: React.FC = () => {
         </div>
 
         {/* System status */}
-        {(activeCameras > 0 || (stats?.critical_alerts ?? 0) > 0) && (
+        {(activeCameras > 0 || criticalCount > 0) && (
           <div className="px-5 py-2.5 space-y-1" style={{ borderBottom: '1px solid var(--border)' }}>
             {activeCameras > 0 && (
               <div className="flex items-center gap-1.5">
@@ -250,11 +263,11 @@ const AppShell: React.FC = () => {
                 </span>
               </div>
             )}
-            {(stats?.critical_alerts ?? 0) > 0 && (
+            {criticalCount > 0 && (
               <div className="flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: 'var(--sev-critical-bar)' }} />
                 <span className="text-[11px]" style={{ color: 'var(--sev-critical-text)' }}>
-                  {stats!.critical_alerts} critical
+                  {criticalCount} critical
                 </span>
               </div>
             )}
