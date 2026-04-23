@@ -81,7 +81,10 @@ export const cameraApi = {
       frame_url: string | null;
     }[];
   }> => {
-    const body: Record<string, any> = { question };
+    const body: Record<string, any> = {
+      question,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    };
     if (startTime) body.start_time = startTime;
     if (endTime) body.end_time = endTime;
     const response = await api.post(`/cameras/${cameraId}/history`, body);
@@ -192,7 +195,10 @@ export const searchApi = {
     cameraIds?: number[],
     limit?: number,
   ): Promise<SceneSearchResult> => {
-    const body: Record<string, any> = { query };
+    const body: Record<string, any> = {
+      query,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    };
     if (startTime) body.start_time = startTime;
     if (endTime) body.end_time = endTime;
     if (cameraIds?.length) body.camera_ids = cameraIds;

@@ -232,7 +232,7 @@ const AskAIDrawer: React.FC<AskAIDrawerProps> = ({ camera, liveFrame, onClose })
                         {m.timeRange?.start && (
                           <>
                             {' · '}
-                            {new Date(m.timeRange.start).toLocaleDateString()} → {new Date(m.timeRange.end).toLocaleDateString()}
+                            {utcToDate(m.timeRange.start).toLocaleDateString()} → {utcToDate(m.timeRange.end).toLocaleDateString()}
                           </>
                         )}
                       </p>

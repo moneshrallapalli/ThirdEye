@@ -344,7 +344,7 @@ const IntelligencePage: React.FC = () => {
                 </div>
                 <p className="text-sm text-stone-900 leading-relaxed whitespace-pre-line">{searchResult.answer}</p>
                 <p className="text-xs text-stone-400 mt-2">
-                  Searched {new Date(searchResult.time_range.start).toLocaleDateString()} → {new Date(searchResult.time_range.end).toLocaleDateString()}
+                  Searched {utcToDate(searchResult.time_range.start).toLocaleDateString()} → {utcToDate(searchResult.time_range.end).toLocaleDateString()}
                 </p>
               </div>
 
@@ -372,7 +372,7 @@ const IntelligencePage: React.FC = () => {
                                   <span className="text-xs text-stone-400">{match.camera_location}</span>
                                 )}
                                 <span className="text-xs text-stone-500 font-mono">
-                                  {new Date(match.timestamp).toLocaleString()}
+                                  {utcToDate(match.timestamp).toLocaleString()}
                                 </span>
                                 {sim && (
                                   <span className={`text-xs px-1.5 py-0.5 rounded border font-medium ${sim.cls}`}>

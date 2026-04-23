@@ -5,7 +5,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPExce
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 from loguru import logger
 import anthropic
 import base64
@@ -32,6 +36,27 @@ from auth import (
 # Create routers
 router = APIRouter()
 ws_router = APIRouter()
+
+
+def _resolve_tz(tz_name: Optional[str]):
+    if tz_name and ZoneInfo:
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:
+            return None
+    return None
+
+
+def _fmt_ts_local(utc_dt: datetime, tz) -> str:
+    """Format a naive UTC datetime in the user's tz; fall back to labeled UTC."""
+    if tz is not None:
+        return utc_dt.replace(tzinfo=timezone.utc).astimezone(tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
+    return utc_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _iso_utc(utc_dt: datetime) -> str:
+    """Return ISO string with explicit Z so JS parses it as UTC."""
+    return utc_dt.replace(tzinfo=None).isoformat() + "Z"
 
 # Initialize local agents
 vision_agent = VisionAgent()
@@ -656,6 +681,8 @@ async def query_camera_history(
         end_time = now
 
     limit = min(int(body.get("limit", 200)), 500)
+    user_tz = _resolve_tz(body.get("tz"))
+    tz_label = str(user_tz) if user_tz else "UTC"
 
     # ── Fetch events with detections ────────────────────────────────────
     from database import Event, Detection
@@ -676,9 +703,9 @@ async def query_camera_history(
         return {
             "camera_id": camera_id,
             "question": question,
-            "answer": f"No recorded events found for this camera between {start_time.isoformat()} and {end_time.isoformat()}.",
+            "answer": f"No recorded events found for this camera between {_fmt_ts_local(start_time, user_tz)} and {_fmt_ts_local(end_time, user_tz)}.",
             "events_analysed": 0,
-            "time_range": {"start": start_time.isoformat(), "end": end_time.isoformat()},
+            "time_range": {"start": _iso_utc(start_time), "end": _iso_utc(end_time)},
             "relevant_frames": [],
         }
 
@@ -689,7 +716,7 @@ async def query_camera_history(
     event_frames_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "event_frames")
 
     for ev in events:
-        ts = ev.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        ts = _fmt_ts_local(ev.timestamp, user_tz)
         desc = ev.scene_description or ev.description or ""
         activity = ""
         detected = []
@@ -730,6 +757,8 @@ async def query_camera_history(
         "You are an AI surveillance analyst. You are given a chronological timeline of scene "
         "observations from a security camera. Each entry includes a timestamp, scene description, "
         "detected objects, and activity.\n\n"
+        f"All timestamps in the timeline are in {tz_label}. When you reference times in your "
+        f"answer, use that same timezone and format (12-hour with AM/PM).\n\n"
         "Answer the user's question based ONLY on this timeline data. Be specific about times, "
         "people, objects, and activities. If something was not observed, say so clearly.\n\n"
         "Keep your answer concise and factual. Reference specific timestamps when relevant."
@@ -748,7 +777,7 @@ async def query_camera_history(
                     "role": "user",
                     "content": (
                         f"Camera: {camera.name} ({camera.location or 'unknown location'})\n"
-                        f"Time range: {start_time.strftime('%Y-%m-%d %H:%M:%S')} to {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"Time range: {_fmt_ts_local(start_time, user_tz)} to {_fmt_ts_local(end_time, user_tz)}\n"
                         f"Total observations: {len(events)}\n\n"
                         f"--- TIMELINE ---\n{timeline_text}\n--- END ---\n\n"
                         f"Question: {question}"
@@ -791,7 +820,7 @@ async def query_camera_history(
 
         relevant_frames.append({
             "event_id": ev.id,
-            "timestamp": ev.timestamp.isoformat(),
+            "timestamp": _iso_utc(ev.timestamp),
             "scene_description": ev.scene_description or "",
             "significance": ev.significance_score or 0,
             "frame_url": frame_url,
@@ -802,7 +831,7 @@ async def query_camera_history(
         "question": question,
         "answer": answer,
         "events_analysed": len(events),
-        "time_range": {"start": start_time.isoformat(), "end": end_time.isoformat()},
+        "time_range": {"start": _iso_utc(start_time), "end": _iso_utc(end_time)},
         "relevant_frames": relevant_frames,
     }
 
@@ -846,6 +875,8 @@ async def search_scenes(
 
     camera_ids_filter = body.get("camera_ids") or None
     limit = min(int(body.get("limit", 50)), 200)
+    user_tz = _resolve_tz(body.get("tz"))
+    tz_label = str(user_tz) if user_tz else "UTC"
 
     # ── 1. ChromaDB semantic search (all cameras) ────────────────────────
     chroma_event_ids: set = set()
@@ -911,9 +942,9 @@ async def search_scenes(
     if not events_map:
         return {
             "query": query_text,
-            "answer": f"No matching scenes found for '{query_text}' between {start_time.strftime('%Y-%m-%d %H:%M')} and {end_time.strftime('%Y-%m-%d %H:%M')}.",
+            "answer": f"No matching scenes found for '{query_text}' between {_fmt_ts_local(start_time, user_tz)} and {_fmt_ts_local(end_time, user_tz)}.",
             "total_matches": 0,
-            "time_range": {"start": start_time.isoformat(), "end": end_time.isoformat()},
+            "time_range": {"start": _iso_utc(start_time), "end": _iso_utc(end_time)},
             "matches": [],
         }
 
@@ -931,7 +962,7 @@ async def search_scenes(
             f"{cam.name} — {cam.location}" if cam and cam.location
             else (cam.name if cam else f"Camera {ev.camera_id}")
         )
-        ts = ev.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        ts = _fmt_ts_local(ev.timestamp, user_tz)
         desc = ev.scene_description or ev.description or "(no description)"
         sim = chroma_scores.get(ev.id)
         sim_tag = f" [similarity {sim:.0%}]" if sim is not None else ""
@@ -948,6 +979,8 @@ async def search_scenes(
         "You are given a chronological timeline of scene observations from multiple cameras. "
         "Each line contains a timestamp, the camera name, a scene description, and optionally "
         "a semantic similarity score showing how closely the observation matches the user's query.\n\n"
+        f"All timestamps in the timeline are in {tz_label}. When you reference times in your "
+        f"answer, use that same timezone and format (12-hour with AM/PM).\n\n"
         "Your job: answer the user's query by identifying EXACTLY when and on which camera "
         "the described scene occurred. If there are multiple occurrences list all of them with "
         "precise timestamps. If nothing matches, say so clearly. Be concise and factual."
@@ -966,7 +999,7 @@ async def search_scenes(
                 "role": "user",
                 "content": (
                     f"Query: {query_text}\n"
-                    f"Time range searched: {start_time.strftime('%Y-%m-%d %H:%M')} → {end_time.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"Time range searched: {_fmt_ts_local(start_time, user_tz)} → {_fmt_ts_local(end_time, user_tz)}\n"
                     f"Cameras searched: {cam_names}\n"
                     f"Total observations in timeline: {len(timeline_lines)}\n\n"
                     f"--- TIMELINE ---\n{timeline_text}\n--- END ---\n\n"
@@ -1006,7 +1039,7 @@ async def search_scenes(
             "camera_id": ev.camera_id,
             "camera_name": cam.name if cam else f"Camera {ev.camera_id}",
             "camera_location": cam.location if cam else None,
-            "timestamp": ev.timestamp.isoformat(),
+            "timestamp": _iso_utc(ev.timestamp),
             "scene_description": ev.scene_description or ev.description or "",
             "significance": ev.significance_score or 0,
             "is_anomaly": bool(ev.is_anomaly),
@@ -1022,7 +1055,7 @@ async def search_scenes(
         "query": query_text,
         "answer": answer,
         "total_matches": len(matches),
-        "time_range": {"start": start_time.isoformat(), "end": end_time.isoformat()},
+        "time_range": {"start": _iso_utc(start_time), "end": _iso_utc(end_time)},
         "matches": matches,
     }
 
