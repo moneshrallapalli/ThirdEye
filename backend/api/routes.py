@@ -1236,7 +1236,9 @@ async def get_alerts(
     db: Session = Depends(get_db)
 ):
     """
-    Get alerts with filtering
+    Get alerts with filtering. Each alert is flattened with its stored
+    `alert_metadata` so the UI can show why the model raised it and the
+    supporting evidence frame.
     """
     try:
         query = db.query(Alert)
@@ -1247,7 +1249,39 @@ async def get_alerts(
             query = query.filter(Alert.severity == severity)
 
         alerts = query.order_by(Alert.timestamp.desc()).limit(limit).all()
-        return alerts
+
+        result = []
+        for a in alerts:
+            meta = a.alert_metadata or {}
+            camera_id = meta.get("camera_id")
+            if camera_id is None and a.event is not None:
+                camera_id = a.event.camera_id
+            result.append({
+                "id": a.id,
+                "event_id": a.event_id,
+                "severity": a.severity.value if hasattr(a.severity, "value") else a.severity,
+                "title": a.title,
+                "message": a.message,
+                "timestamp": a.timestamp.isoformat() if a.timestamp else None,
+                "is_read": a.is_read,
+                "is_dismissed": a.is_dismissed,
+                "acknowledged_at": a.acknowledged_at.isoformat() if a.acknowledged_at else None,
+                "response_time_seconds": a.response_time_seconds,
+                "camera_id": camera_id,
+                "significance": meta.get("significance") or meta.get("query_confidence"),
+                "frame_url": meta.get("frame_url"),
+                "detected_objects": meta.get("detected_objects", []),
+                "detections": meta.get("detections", []),
+                "user_query": meta.get("user_query"),
+                "query_confidence": meta.get("query_confidence"),
+                "query_details": meta.get("query_details"),
+                "claude_reasoning": meta.get("claude_reasoning"),
+                "scene_description": meta.get("scene_description"),
+                "activity": meta.get("activity"),
+                "reasoning": meta.get("reasoning"),
+                "alert_type": meta.get("alert_type", "trigger_match"),
+            })
+        return result
     except Exception as e:
         from loguru import logger
         logger.warning(f"Database not available for alerts: {e}")

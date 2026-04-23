@@ -104,32 +104,66 @@ print_header
 print_step "Running pre-flight checks..."
 echo ""
 
+# Non-interactive mode: restart.sh / CI / piped invocations auto-reclaim ports
+# instead of blocking on an interactive prompt.
+NONINTERACTIVE=0
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y|--no-prompt) NONINTERACTIVE=1 ;;
+    esac
+done
+if [ -n "$THIRDEYE_NONINTERACTIVE" ]; then NONINTERACTIVE=1; fi
+if ! [ -t 0 ];                         then NONINTERACTIVE=1; fi
+
+reclaim_port() {
+    local port=$1
+    local label=$2
+    print_step "Reclaiming port $port ($label)..."
+    # Only kill processes that are genuinely ours: backend main.py / react-scripts,
+    # plus a final lsof-based sweep on the port itself.
+    if [ "$port" = "8000" ]; then
+        pkill -f "python.*main\.py" 2>/dev/null || true
+        pkill -f "uvicorn.*main:app" 2>/dev/null || true
+    elif [ "$port" = "3000" ]; then
+        pkill -f "react-scripts" 2>/dev/null || true
+        pkill -f "node.*$FRONTEND_DIR" 2>/dev/null || true
+    fi
+    if lsof -ti :"$port" > /dev/null 2>&1; then
+        lsof -ti :"$port" | xargs kill -9 2>/dev/null || true
+    fi
+    sleep 1
+}
+
 # Check if already running
 if check_port 8000; then
     print_warning "Backend already running on port 8000"
-    read -p "Stop and restart? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        print_step "Stopping existing backend..."
-        killall python 2>/dev/null || true
-        sleep 2
+    if [ "$NONINTERACTIVE" = "1" ]; then
+        reclaim_port 8000 "backend"
     else
-        print_error "Cannot start - port 8000 already in use"
-        exit 1
+        read -r -p "Stop and restart? (y/n) " -n 1 REPLY
+        echo
+        if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+            reclaim_port 8000 "backend"
+        else
+            print_error "Cannot start - port 8000 already in use"
+            exit 1
+        fi
     fi
 fi
 
 if check_port 3000; then
     print_warning "Frontend already running on port 3000"
-    read -p "Stop and restart? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        print_step "Stopping existing frontend..."
-        lsof -ti :3000 | xargs kill -9 2>/dev/null || true
-        sleep 2
+    if [ "$NONINTERACTIVE" = "1" ]; then
+        reclaim_port 3000 "frontend"
     else
-        print_error "Cannot start - port 3000 already in use"
-        exit 1
+        read -r -p "Stop and restart? (y/n) " -n 1 REPLY
+        echo
+        if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+            reclaim_port 3000 "frontend"
+        else
+            print_error "Cannot start - port 3000 already in use"
+            exit 1
+        fi
     fi
 fi
 
@@ -268,11 +302,83 @@ else
     exit 1
 fi
 
-# Idempotent bring-up: no-op if already running, starts/creates if not
+# Self-heal common stuck states before bringing things up. If there's a
+# container with our fixed name hanging around in Exited / Created state,
+# `compose up` will often fail rather than reuse it — remove it so the
+# next call creates a fresh one.
+for cname in sentintinel_postgres sentintinel_redis; do
+    state=$(docker inspect -f '{{.State.Status}}' "$cname" 2>/dev/null || true)
+    if [ -n "$state" ] && [ "$state" != "running" ]; then
+        print_warning "Found stale container $cname in state '$state' — removing"
+        docker rm -f "$cname" > /dev/null 2>&1 || true
+    fi
+done
+
+# Port conflict diagnosis. For each host port we publish, figure out
+# who is listening on it. Common causes on macOS:
+#  - An older compose run (different container names) is still up
+#    under a previous project name. These are "orphans" — safe to nuke.
+#  - `brew services` has started a local postgres/redis that's bound
+#    to the same port. The user has to stop it themselves.
+#
+# We auto-remove orphan docker containers (anything whose name is not
+# sentintinel_* that binds our port), and loudly warn on host-level
+# daemons so the user can make an informed decision.
+declare -a HOST_PORT_WARNINGS=()
+for hp in 5433 6379; do
+    # Find any docker container publishing this host port.
+    blocker_container=$(docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null \
+        | awk -F'|' -v p=":${hp}->" '$2 ~ p {print $1; exit}')
+    if [ -n "$blocker_container" ] \
+        && [ "$blocker_container" != "sentintinel_postgres" ] \
+        && [ "$blocker_container" != "sentintinel_redis" ]; then
+        print_warning "Orphan container '$blocker_container' is holding host port ${hp} — removing"
+        docker rm -f "$blocker_container" > /dev/null 2>&1 || true
+    fi
+
+    # Anything *else* (host daemon like brew postgres/redis) still on
+    # the port? Surface it as a warning, don't auto-kill.
+    if lsof -iTCP:${hp} -sTCP:LISTEN -P 2>/dev/null | awk 'NR>1 {print $1}' \
+        | grep -vE '^(com\.docke|docker|vpnkit)' | grep -q .; then
+        owner=$(lsof -iTCP:${hp} -sTCP:LISTEN -P 2>/dev/null \
+            | awk 'NR>1 && $1 !~ /^(com\.docke|docker|vpnkit)/ {print $1 " (pid " $2 ")"; exit}')
+        HOST_PORT_WARNINGS+=("Port ${hp} is also held by host process ${owner}.")
+    fi
+done
+if [ ${#HOST_PORT_WARNINGS[@]} -gt 0 ]; then
+    for w in "${HOST_PORT_WARNINGS[@]}"; do
+        print_warning "$w"
+    done
+    print_info "This usually means a Homebrew service (e.g. 'brew services list') is"
+    print_info "running a duplicate postgres/redis. Docker can still start our"
+    print_info "containers, but the backend may connect to the brew instance first."
+    print_info "To silence this, stop it with: brew services stop postgresql && brew services stop redis"
+fi
+
+# Idempotent bring-up: no-op if already running, starts/creates if not.
+# Stderr is captured (not discarded) so failures surface in the terminal
+# instead of producing a silent "Failed to start database containers."
+# NOTE: 'set -e' is active in this script, so we must temporarily disable
+# it — otherwise a non-zero command substitution aborts before we can
+# print the diagnostic block below.
 print_step "Starting database containers (postgres + redis)..."
-if ! (cd "$SCRIPT_DIR" && $COMPOSE up -d postgres redis > /dev/null 2>&1); then
-    print_error "Failed to start database containers."
-    print_info "Try manually: (cd $SCRIPT_DIR && $COMPOSE up -d postgres redis)"
+set +e
+COMPOSE_ERR=$(cd "$SCRIPT_DIR" && $COMPOSE up -d postgres redis 2>&1)
+COMPOSE_RC=$?
+set -e
+if [ $COMPOSE_RC -ne 0 ]; then
+    print_error "Failed to start database containers (exit $COMPOSE_RC)."
+    echo "----- compose output -----"
+    echo "$COMPOSE_ERR"
+    echo "--------------------------"
+    echo "----- current docker state -----"
+    docker ps -a --filter "name=sentintinel_" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true
+    echo "--------------------------------"
+    print_info "Common fixes:"
+    print_info "  1. Make sure Docker Desktop is fully started (whale icon solid, not animating)"
+    print_info "  2. Remove stale containers: docker rm -f sentintinel_postgres sentintinel_redis"
+    print_info "  3. Free the host ports: lsof -iTCP:5433 -sTCP:LISTEN ; lsof -iTCP:6379 -sTCP:LISTEN"
+    print_info "  4. Retry manually: (cd $SCRIPT_DIR && $COMPOSE up -d postgres redis)"
     exit 1
 fi
 print_success "Database containers up"

@@ -71,6 +71,15 @@ export interface Alert {
   frame_base64?: string;
   detections?: Detection[];
   detected_objects?: string[];
+  // Reasoning / provenance so the UI can explain *why* the alert fired
+  user_query?: string;
+  query_confidence?: number;
+  query_details?: string;
+  claude_reasoning?: string;
+  scene_description?: string;
+  activity?: string;
+  reasoning?: string;
+  alert_type?: string;
 }
 
 export interface LiveFeedUpdate {

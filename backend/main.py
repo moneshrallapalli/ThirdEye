@@ -81,8 +81,10 @@ async def _camera_worker(camera_id: int):
     event_frames_dir = Path(__file__).parent / "event_frames"
     event_frames_dir.mkdir(exist_ok=True)
 
-    # Shared state between streamer and analyser
-    latest_frame = {"frame": None, "base64": None}
+    # Shared state between streamer and analyser. `seq` is bumped on every
+    # new frame so the analysis loop can tell "is this a new frame or the
+    # same one I already analysed?" and avoid wasting Claude calls.
+    latest_frame = {"frame": None, "base64": None, "seq": 0}
     ANALYSIS_INTERVAL_SECONDS = 120
     minute_start_time = datetime.utcnow()
     critical_events = []
@@ -103,9 +105,12 @@ async def _camera_worker(camera_id: int):
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 frame_b64 = base64.b64encode(buffer).decode('utf-8')
 
-                # Update shared state for the analysis loop
+                # Update shared state for the analysis loop. Bumping the seq
+                # lets the analyser detect a genuinely new frame vs. the same
+                # one it already processed (avoids redundant Claude calls).
                 latest_frame["frame"] = frame
                 latest_frame["base64"] = frame_b64
+                latest_frame["seq"] = latest_frame.get("seq", 0) + 1
 
                 await manager.send_live_feed_update(camera_id, frame_b64, {})
                 await asyncio.sleep(1.0 / settings.CAMERA_FPS)
@@ -120,8 +125,14 @@ async def _camera_worker(camera_id: int):
     async def _analysis_loop():
         nonlocal minute_start_time, critical_events
 
-        # Analysis interval — how often to call Claude (seconds)
-        ANALYSIS_EVERY = 5
+        # How long to wait between *Claude* calls at minimum. A new frame
+        # from the streamer can trigger an analysis sooner than the legacy
+        # fixed interval, but never faster than this throttle.
+        MIN_INTERVAL = float(getattr(settings, "ANALYSIS_MIN_INTERVAL_SECONDS", 3.0))
+        POLL_SLEEP = 0.5  # how often to check for a new frame
+
+        last_analyzed_seq = -1
+        last_analyzed_at = 0.0
         consecutive_errors = 0
 
         while True:
@@ -131,9 +142,27 @@ async def _camera_worker(camera_id: int):
 
                 frame = latest_frame["frame"]
                 frame_base64 = latest_frame["base64"]
+                frame_seq = latest_frame.get("seq", 0)
                 if frame is None:
                     await asyncio.sleep(1)
                     continue
+
+                # Deduplicate + throttle: only hit Claude when we actually
+                # have a new frame AND the min-interval has elapsed. This
+                # fixes two old bugs at once — (1) calling Claude 6× on the
+                # same stale frame, and (2) missing short events because
+                # capture FPS was too low.
+                now_monotonic = asyncio.get_event_loop().time()
+                frame_is_new = frame_seq != last_analyzed_seq
+                interval_elapsed = (now_monotonic - last_analyzed_at) >= MIN_INTERVAL
+                if not (frame_is_new and interval_elapsed):
+                    await asyncio.sleep(POLL_SLEEP)
+                    continue
+
+                last_analyzed_seq = frame_seq
+                last_analyzed_at = now_monotonic
+                cycle_start = now_monotonic
+                stage_times: dict[str, float] = {}
 
                 # ── Resolve active tasks ──────────────────────────────────
                 user_query = None
@@ -207,12 +236,14 @@ async def _camera_worker(camera_id: int):
                     )
 
                 # ── Analyse frame (Claude API — slow) ─────────────────────
+                _t0 = asyncio.get_event_loop().time()
                 analysis = await vision_agent.analyze_frame(
                     frame, camera_id,
                     previous_context=vision_context,
                     user_query=user_query,
                     monitoring_mode=has_monitoring_tasks and not requires_baseline,
                 )
+                stage_times["vision"] = asyncio.get_event_loop().time() - _t0
 
                 # ── Establish baseline if needed ──────────────────────────
                 if user_query and requires_baseline and task_id and task_id not in baseline_states:
@@ -242,6 +273,11 @@ async def _camera_worker(camera_id: int):
                         f"monitoring={has_monitoring_tasks} "
                         f"details={str(analysis.get('query_details', ''))[:120]}"
                     )
+                else:
+                    logger.debug(
+                        f"[CAM-{camera_id}] no active trigger — "
+                        f"analysing scene but no alerts will be fired"
+                    )
 
                 if requires_baseline and task_id in baseline_states:
                     if baseline_match is False:
@@ -256,9 +292,30 @@ async def _camera_worker(camera_id: int):
                             analysis['query_confidence'] = query_confidence
                             analysis['query_match'] = True
 
-                # ── Claude reasoning override ─────────────────────────────
-                if reasoning_agent and user_query:
+                # ── Claude reasoning override (conditional) ───────────────
+                # The reasoning agent is a ~5s second Claude call. Running it
+                # on every cycle roughly doubles our latency and cuts the
+                # number of frames we can actually sample per minute in half.
+                # Only invoke it when it can meaningfully affect the decision:
+                #   • baseline-tracking tasks (need scene-progression context)
+                #   • borderline confidence (20–70) where a second opinion
+                #     might flip the decision either way
+                # Skip it when the vision agent is already very sure (high
+                # confidence yes or low confidence no), since reasoning can
+                # only *raise* confidence — it never overrides a confident
+                # "yes" downward.
+                needs_reasoning = bool(
+                    reasoning_agent
+                    and user_query
+                    and (
+                        requires_baseline
+                        or (20 <= int(query_confidence or 0) < 70)
+                        or query_match  # confirm positives
+                    )
+                )
+                if needs_reasoning:
                     try:
+                        _t0 = asyncio.get_event_loop().time()
                         reasoning_agent.add_observation(analysis)
                         baseline_for_claude = baseline_states[task_id]['state'] if (task_id and task_id in baseline_states) else None
                         claude_decision = await reasoning_agent.analyze_scene_progression(
@@ -267,6 +324,7 @@ async def _camera_worker(camera_id: int):
                             current_observation=analysis,
                             previous_observations=reasoning_agent.get_observation_history()
                         )
+                        stage_times["reasoning"] = asyncio.get_event_loop().time() - _t0
                         if claude_decision.get('should_alert') and claude_decision.get('confidence_percentage', 0) > query_confidence:
                             query_confidence = claude_decision.get('confidence_percentage', query_confidence)
                             query_match = True
@@ -277,8 +335,18 @@ async def _camera_worker(camera_id: int):
                             analysis['claude_decision'] = True
                     except Exception as e:
                         logger.warning(f"[CAM-{camera_id}] Claude reasoning error: {e}")
+                else:
+                    stage_times["reasoning"] = 0.0
+                    if reasoning_agent and user_query:
+                        # Still keep observation history in sync so when we DO
+                        # run reasoning later it has continuity.
+                        try:
+                            reasoning_agent.add_observation(analysis)
+                        except Exception:
+                            pass
 
                 # ── Context ───────────────────────────────────────────────
+                _t0 = asyncio.get_event_loop().time()
                 try:
                     context_summary = await context_agent.get_context_for_event(
                         analysis.get('scene_description', ''), datetime.utcnow(), camera_id
@@ -286,6 +354,7 @@ async def _camera_worker(camera_id: int):
                 except Exception as ctx_err:
                     logger.warning(f"[CAM-{camera_id}] Context agent error (non-fatal): {ctx_err}")
                     context_summary = "No historical context available"
+                stage_times["context"] = asyncio.get_event_loop().time() - _t0
 
                 # ── Significance ──────────────────────────────────────────
                 significance = vision_agent.calculate_significance_score(analysis)
@@ -317,78 +386,224 @@ async def _camera_worker(camera_id: int):
                 })
 
                 # ── Immediate alert decision ──────────────────────────────
-                scene_text = analysis.get('scene_description', '').lower()
-                activity_text = analysis.get('activity', '').lower()
-                combined_text = scene_text + ' ' + activity_text
-
-                critical_keywords = ['weapon', 'gun', 'knife', 'violence', 'fight', 'attack',
-                                      'threat', 'dangerous', 'hazard', 'fire', 'smoke', 'blood',
-                                      'injury', 'fall', 'accident', 'emergency']
-                has_dangerous_keyword = any(kw in combined_text for kw in critical_keywords)
-
+                # Only fire an alert if the USER has actually asked us to
+                # monitor something on this camera. Raw scene severity (fires,
+                # weapons, etc.) without an active user task is logged as an
+                # event but does not generate an alert — the user only wants
+                # alerts for the things they triggered.
                 query_match = analysis.get('query_match', False)
                 query_confidence = analysis.get('query_confidence', 0)
-                immediate_threshold = settings.IMMEDIATE_ALERT_THRESHOLD
-                activity_threshold = settings.ACTIVITY_DETECTION_THRESHOLD if requires_baseline else immediate_threshold
 
-                should_send_immediate = False
-                alert_reason = []
+                # Safety net for MALFORMED Claude responses only. When
+                # monitoring_mode=True we explicitly ask Claude to evaluate
+                # every rule and return query_match=true/false. If Claude
+                # returned an explicit false (or "none of the rules are
+                # triggered"), we MUST respect that — otherwise we'll flag
+                # unrelated objects (e.g. a glass bottle) as a water bottle
+                # match and produce false positives.
+                #
+                # This fallback therefore only fires when the field is
+                # actually absent from the response (parsing glitch / model
+                # skipped the field), not when Claude decided "no".
+                claude_evaluated = "query_match" in analysis
+                if user_query and not query_match and not claude_evaluated:
+                    import re as _re
+                    stopwords = {
+                        "alert", "me", "if", "you", "see", "any", "a", "an",
+                        "the", "is", "are", "there", "on", "in", "of", "for",
+                        "to", "and", "or", "when", "camera", "watch", "monitor",
+                        "look", "find", "detects", "detect",
+                    }
+                    query_tokens = {
+                        t for t in _re.findall(r"[a-zA-Z]{3,}", user_query.lower())
+                        if t not in stopwords
+                    }
+                    best_det_conf = 0.0
+                    matched_label = None
+                    for d in analysis.get("detections", []):
+                        label = str(d.get("label", "")).lower()
+                        if not label or not query_tokens:
+                            continue
+                        label_tokens = set(_re.findall(r"[a-zA-Z]{3,}", label))
+                        # Require the FULL multi-word phrase to appear in the
+                        # detection label so "water bottle" does NOT match a
+                        # bare "bottle" — that's what produced the false
+                        # positive in the screenshot.
+                        if len(query_tokens) > 1 and not query_tokens.issubset(label_tokens):
+                            continue
+                        if len(query_tokens) == 1 and not (query_tokens & label_tokens):
+                            continue
+                        conf = float(d.get("confidence", 0) or 0)
+                        if conf <= 1.0:
+                            conf *= 100.0
+                        if conf > best_det_conf:
+                            best_det_conf = conf
+                            matched_label = label
+                    if matched_label:
+                        inferred = int(max(best_det_conf, 75))
+                        logger.info(
+                            f"[CAM-{camera_id}] detection-fallback matched "
+                            f"'{matched_label}' for trigger '{user_query}' "
+                            f"(Claude response was malformed) "
+                            f"-> query_match=True confidence={inferred}"
+                        )
+                        query_match = True
+                        query_confidence = max(query_confidence, inferred)
+                        analysis["query_match"] = True
+                        analysis["query_confidence"] = query_confidence
+                        if not analysis.get("query_details"):
+                            analysis["query_details"] = (
+                                f"Detected '{matched_label}' which matches your "
+                                f"trigger \"{user_query}\"."
+                            )
 
-                if has_dangerous_keyword:
-                    should_send_immediate = True
-                    alert_reason.append("dangerous_keyword")
+                # For a user-defined DB monitoring task, we want to be more
+                # sensitive (the user explicitly asked us to watch for this),
+                # so fall back to the lower activity threshold instead of the
+                # stricter immediate-action one.
+                if requires_baseline:
+                    activity_threshold = settings.ACTIVITY_DETECTION_THRESHOLD
+                elif has_monitoring_tasks:
+                    activity_threshold = min(
+                        settings.IMMEDIATE_ALERT_THRESHOLD,
+                        settings.ACTIVITY_DETECTION_THRESHOLD,
+                    )
+                else:
+                    activity_threshold = settings.IMMEDIATE_ALERT_THRESHOLD
 
-                if user_query and query_match and query_confidence >= activity_threshold:
-                    should_send_immediate = True
-                    alert_reason.append(f"query_matched_{query_confidence}%")
+                should_send_immediate = bool(
+                    user_query and query_match and query_confidence >= activity_threshold
+                )
+
+                if user_query:
+                    logger.info(
+                        f"[CAM-{camera_id}] decision: match={query_match} "
+                        f"conf={query_confidence} threshold={activity_threshold} "
+                        f"-> fire={should_send_immediate}"
+                    )
 
                 if should_send_immediate:
-                    if has_dangerous_keyword:
+                    if requires_baseline:
                         severity = "CRITICAL"
-                        title = f"CRITICAL DANGER - Camera {camera_id}"
-                    elif requires_baseline:
-                        severity = "CRITICAL"
-                        title = f"CRITICAL EVENT: {user_query.title()} - Camera {camera_id}"
+                        title = f"Trigger matched: {user_query.title()}"
                     else:
                         severity = "CRITICAL" if query_confidence >= 80 else "WARNING"
-                        title = f"{user_query.title()} Detected - Camera {camera_id}"
+                        title = f"Trigger matched: {user_query.title()}"
 
-                    if user_query and query_match and requires_baseline and task_id in baseline_states:
+                    # Human-readable message shown in the alert row
+                    if requires_baseline and task_id in baseline_states:
                         baseline_info = baseline_states[task_id]
                         time_elapsed = (datetime.utcnow() - baseline_info['established_at']).seconds
                         time_str = f"{time_elapsed}s" if time_elapsed < 60 else f"{time_elapsed // 60}m"
                         alert_msg = (
-                            f"Camera {camera_id} detected {analysis.get('query_details', user_query).lower()}.\n\n"
-                            f"Baseline: {baseline_info['state'][:120].lower()}\n"
-                            f"Now: {analysis.get('scene_description', '')[:120].lower()}\n\n"
-                            f"Confidence: {query_confidence}% | Triggered {time_str} after monitoring started."
-                        )
-                    elif user_query and query_match:
-                        alert_msg = (
-                            f"Camera {camera_id} found: {user_query.lower()} ({query_confidence}% confidence).\n\n"
-                            f"{analysis.get('query_details', analysis.get('scene_description', ''))}"
+                            f"Camera {camera_id} detected {analysis.get('query_details', user_query).lower()}. "
+                            f"({query_confidence}% confidence, {time_str} after monitoring began)"
                         )
                     else:
                         alert_msg = (
-                            f"Camera {camera_id}: {analysis.get('scene_description', 'Hazardous situation detected')}"
+                            f"Camera {camera_id} matched your monitoring trigger "
+                            f"\"{user_query}\" with {query_confidence}% confidence."
                         )
 
+                    # Rich reasoning / evidence payload persisted to DB so the
+                    # Alerts page can show WHY the model considered this an alert.
+                    claude_reasoning = analysis.get('claude_reasoning', '')
+                    query_details = analysis.get('query_details', '')
+                    scene_description = analysis.get('scene_description', '')
+                    activity = analysis.get('activity', '')
+
+                    reasoning_parts = []
+                    if query_details:
+                        reasoning_parts.append(f"Match evidence: {query_details}")
+                    if claude_reasoning:
+                        reasoning_parts.append(f"Model reasoning: {claude_reasoning}")
+                    if scene_description:
+                        reasoning_parts.append(f"Scene: {scene_description}")
+                    if activity:
+                        reasoning_parts.append(f"Activity: {activity}")
+                    reasoning_text = "\n\n".join(reasoning_parts)
+
+                    alert_metadata = {
+                        "camera_id": camera_id,
+                        "user_query": user_query,
+                        "query_confidence": query_confidence,
+                        "query_details": query_details,
+                        "claude_reasoning": claude_reasoning,
+                        "scene_description": scene_description,
+                        "activity": activity,
+                        "reasoning": reasoning_text,
+                        "frame_url": frame_url,
+                        "detected_objects": detected_objects,
+                        "detections": [
+                            {
+                                "label": d.get("label", ""),
+                                "confidence": d.get("confidence", 0),
+                                "location": d.get("location", ""),
+                            }
+                            for d in detections_list
+                        ],
+                        "significance": query_confidence,
+                        "requires_baseline": requires_baseline,
+                        "alert_type": "trigger_match",
+                    }
+
+                    # Persist alert + its backing event so it survives refresh
+                    persisted_id = None
+                    try:
+                        adb = SessionLocal()
+                        ev = Event(
+                            camera_id=camera_id,
+                            event_type="trigger_match",
+                            description=user_query,
+                            scene_description=scene_description,
+                            significance_score=query_confidence,
+                            severity=AlertSeverity.CRITICAL if severity == "CRITICAL" else AlertSeverity.WARNING,
+                            context_summary=context_summary,
+                            event_metadata={**analysis, "user_query": user_query},
+                        )
+                        adb.add(ev)
+                        adb.flush()
+                        new_alert = Alert(
+                            event_id=ev.id,
+                            severity=AlertSeverity.CRITICAL if severity == "CRITICAL" else AlertSeverity.WARNING,
+                            title=title,
+                            message=alert_msg,
+                            alert_metadata=alert_metadata,
+                        )
+                        adb.add(new_alert)
+                        adb.commit()
+                        persisted_id = new_alert.id
+                        adb.close()
+                    except Exception as db_err:
+                        logger.warning(f"[CAM-{camera_id}] Failed to persist alert: {db_err}")
+                        try:
+                            adb.rollback()
+                            adb.close()
+                        except Exception:
+                            pass
+
                     immediate_alert_data = {
-                        "id": f"immediate_{camera_id}_{int(datetime.utcnow().timestamp())}",
+                        "id": persisted_id if persisted_id is not None
+                              else f"immediate_{camera_id}_{int(datetime.utcnow().timestamp())}",
                         "severity": severity,
                         "title": title,
                         "message": alert_msg,
                         "camera_id": camera_id,
                         "timestamp": datetime.utcnow().isoformat(),
-                        "significance": query_confidence if user_query else significance,
+                        "significance": query_confidence,
                         "frame_url": frame_url,
                         "frame_base64": frame_base64,
                         "detections": detections_list,
                         "detected_objects": detected_objects,
-                        "alert_type": "immediate",
+                        "alert_type": "trigger_match",
                         "user_query": user_query,
                         "query_confidence": query_confidence,
-                        "is_read": False
+                        "query_details": query_details,
+                        "claude_reasoning": claude_reasoning,
+                        "scene_description": scene_description,
+                        "activity": activity,
+                        "reasoning": reasoning_text,
+                        "is_read": False,
                     }
                     await manager.send_alert(immediate_alert_data)
                     try:
@@ -396,7 +611,9 @@ async def _camera_worker(camera_id: int):
                     except Exception as e:
                         logger.error(f"[CAM-{camera_id}] Alert email failed: {e}")
 
-                elif not should_send_immediate and significance >= 50:
+                elif user_query and not should_send_immediate and significance >= 50:
+                    # Collect for the 2-minute summary, but only while a user
+                    # monitoring task is active on this camera.
                     critical_events.append({
                         'timestamp': current_time.isoformat(),
                         'analysis': analysis,
@@ -437,13 +654,11 @@ async def _camera_worker(camera_id: int):
                     for det in vision_agent.extract_detections_for_storage(analysis):
                         db.add(Detection(event_id=event.id, camera_id=camera_id, **det))
 
-                    if event.significance_score >= settings.WARNING_THRESHOLD:
-                        db.add(Alert(
-                            event_id=event.id,
-                            severity=event.severity,
-                            title=f"{event.severity.value} Alert - Camera {camera_id}",
-                            message=event.scene_description
-                        ))
+                    # NOTE: We intentionally do NOT create an Alert row here
+                    # anymore. Alerts are only created for user-triggered
+                    # matches (see the immediate alert block above) so the
+                    # Alerts page shows the things the user asked to monitor
+                    # instead of a stream of generic severity events.
 
                     db.commit()
                     db.close()
@@ -503,7 +718,27 @@ async def _camera_worker(camera_id: int):
                     logger.info(f"[CAM-{camera_id}] New 2-minute period started")
 
                 consecutive_errors = 0
-                await asyncio.sleep(ANALYSIS_EVERY)
+
+                # Per-cycle timing summary so we can see exactly where the
+                # wall-clock time is going. If the total cycle is much longer
+                # than vision+reasoning+context combined, the remainder is
+                # DB/frame-save/websocket overhead and we know where to look.
+                cycle_total = asyncio.get_event_loop().time() - cycle_start
+                try:
+                    logger.info(
+                        f"[CAM-{camera_id}] cycle={cycle_total:.2f}s "
+                        f"vision={stage_times.get('vision', 0):.2f}s "
+                        f"reasoning={stage_times.get('reasoning', 0):.2f}s "
+                        f"context={stage_times.get('context', 0):.2f}s "
+                        f"(reasoning_{'on' if stage_times.get('reasoning', 0) > 0 else 'skipped'})"
+                    )
+                except Exception:
+                    pass
+
+                # Pacing is handled by the dedupe + MIN_INTERVAL gate at the
+                # top of the loop; a short sleep here just prevents a tight
+                # busy-loop when no new frames are arriving.
+                await asyncio.sleep(POLL_SLEEP)
 
             except asyncio.CancelledError:
                 break

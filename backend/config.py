@@ -53,16 +53,30 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     # Camera Configuration
-    CAMERA_FPS: float = 0.033  # 0.033 FPS = 1 frame every 30 seconds = 2 calls/min (within free tier rate limit)
+    # 1.0 FPS gives the model a fresh frame every second so short events
+    # (e.g. someone drinking from a water bottle) actually land in a frame.
+    # The analysis loop deduplicates + throttles Claude calls on top of this
+    # so the upstream rate limit is respected regardless of capture FPS.
+    CAMERA_FPS: float = 1.0
     MAX_CAMERAS: int = 4
     VIDEO_RESOLUTION_WIDTH: int = 640  # Reduced for faster processing
     VIDEO_RESOLUTION_HEIGHT: int = 480  # Reduced for faster processing
+
+    # Minimum seconds between Claude vision calls per camera. The analysis
+    # loop also skips any frame it has already analysed, so in practice
+    # Claude is called at most once per unique frame per interval.
+    ANALYSIS_MIN_INTERVAL_SECONDS: float = 3.0
 
     # Alert Thresholds
     CRITICAL_THRESHOLD: int = 80
     WARNING_THRESHOLD: int = 50
     IMMEDIATE_ALERT_THRESHOLD: int = 60  # Threshold for immediate action required alerts
     ACTIVITY_DETECTION_THRESHOLD: int = 40  # Lower threshold for activity/state changes (emergency mode)
+
+    # Display / localisation — controls timezone used in emails & logs.
+    # Use an IANA name (e.g. "America/Los_Angeles", "Asia/Kolkata").
+    # Leave empty to use the server's local timezone.
+    DISPLAY_TIMEZONE: str = ""
 
     @property
     def database_url(self) -> str:
