@@ -130,6 +130,8 @@ export interface CameraTask {
   is_default: boolean;
   is_active: boolean;
   priority: number;
+  source?: 'manual' | 'ai_command' | string;
+  original_command?: string | null;
   created_at?: string;
 }
 

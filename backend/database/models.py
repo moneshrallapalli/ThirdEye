@@ -155,11 +155,20 @@ class CameraTask(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="CASCADE"), nullable=False)
-    command = Column(Text, nullable=False)  # Natural language: "Watch for fire or smoke"
+    command = Column(Text, nullable=False)  # Detection target sent to vision/reasoning agents
     task_type = Column(String(100))  # fire_detection, intrusion_detection, custom, etc.
     is_default = Column(Boolean, default=False)  # True = auto-assigned from location preset
     is_active = Column(Boolean, default=True)
     priority = Column(Integer, default=1)  # Higher = more important
+
+    # Provenance. "manual" = set up from Cameras page; "ai_command" = issued
+    # from the Intelligence → AI Command panel (broadcast across live cameras).
+    source = Column(String(50), default="manual", nullable=False, index=True)
+    # When `source == "ai_command"` we keep the user's original natural-language
+    # instruction here so the UI can show what they typed even after the parser
+    # has normalised it into a short detection target.
+    original_command = Column(Text, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships

@@ -28,6 +28,11 @@ from services.email_service import email_service
 camera_workers: Dict[int, asyncio.Task] = {}       # camera_id → asyncio.Task
 camera_command_agents: Dict[int, object] = {}      # camera_id → CommandAgent instance
 
+# AI Commands issued from the Intelligence page while zero cameras are active
+# live here in-memory until a camera comes online. Each entry is a dict with
+# keys: original_command, command, task_type, priority, queued_at.
+pending_ai_commands: list[dict] = []
+
 # Shared global command_agent kept for backward-compat with routes that import it
 from agents import CommandAgent
 command_agent = CommandAgent()
@@ -41,9 +46,75 @@ def start_camera_worker(camera_id: int):
 
     from agents import CommandAgent
     camera_command_agents[camera_id] = CommandAgent()
+
+    # Flush any AI Commands that were queued while no cameras were running.
+    # They attach to every camera that comes online from now on.
+    _attach_pending_ai_commands_to_camera(camera_id)
+
     task = asyncio.create_task(_camera_worker(camera_id))
     camera_workers[camera_id] = task
     logger.info(f"[CAM-{camera_id}] Worker task started")
+
+
+def _attach_pending_ai_commands_to_camera(camera_id: int) -> int:
+    """Persist every queued AI Command as a CameraTask row for `camera_id`.
+
+    Returns the number of commands attached. Safe to call even when the
+    queue is empty. Does not clear the queue — pending AI Commands stay
+    armed so that any subsequent cameras also pick them up. Use
+    `clear_pending_ai_command(...)` to actually drop one.
+    """
+    if not pending_ai_commands:
+        return 0
+
+    try:
+        from database import SessionLocal, CameraTask
+    except Exception as exc:  # pragma: no cover — DB offline during smoke tests
+        logger.warning(f"[CAM-{camera_id}] Cannot flush pending AI commands: {exc}")
+        return 0
+
+    attached = 0
+    db = SessionLocal()
+    try:
+        for pending in pending_ai_commands:
+            # Skip if the same original command is already attached (e.g. the
+            # worker was restarted while DB rows still exist).
+            existing = (
+                db.query(CameraTask)
+                .filter(
+                    CameraTask.camera_id == camera_id,
+                    CameraTask.source == "ai_command",
+                    CameraTask.original_command == pending.get("original_command"),
+                    CameraTask.is_active == True,  # noqa: E712
+                )
+                .first()
+            )
+            if existing:
+                continue
+
+            task_row = CameraTask(
+                camera_id=camera_id,
+                command=pending.get("command") or pending.get("original_command") or "",
+                task_type=pending.get("task_type", "custom"),
+                is_default=False,
+                is_active=True,
+                priority=pending.get("priority", 2),
+                source="ai_command",
+                original_command=pending.get("original_command"),
+            )
+            db.add(task_row)
+            attached += 1
+        if attached:
+            db.commit()
+            logger.info(
+                f"[CAM-{camera_id}] Attached {attached} queued AI command(s) from pending queue"
+            )
+    except Exception as exc:
+        db.rollback()
+        logger.warning(f"[CAM-{camera_id}] Failed to attach pending AI commands: {exc}")
+    finally:
+        db.close()
+    return attached
 
 
 def stop_camera_worker(camera_id: int):
@@ -187,37 +258,43 @@ async def _camera_worker(camera_id: int):
                 except Exception as task_err:
                     logger.warning(f"[CAM-{camera_id}] Failed to load DB tasks: {task_err}")
 
+                # Every ACTIVE in-memory task contributes a query. The first
+                # baseline-requiring task wins the baseline slot; all others
+                # are appended as plain detection queries.
                 active_tasks = cmd_agent.get_active_tasks()
-                adhoc_query = None
+                adhoc_queries: list[str] = []
 
-                if active_tasks:
-                    task_id = list(active_tasks.keys())[0]
-                    latest_task = active_tasks[task_id]
-                    task_command = latest_task.get('command', {})
-                    target_object = task_command.get('target', '')
-                    understood_intent = task_command.get('understood_intent', '')
-                    expected_change = task_command.get('expected_change', '')
-                    requires_baseline = task_command.get('requires_baseline', False)
-                    query_type = task_command.get('query_type', 'object')
+                for tid, t in active_tasks.items():
+                    task_command = t.get('command', {}) or {}
+                    tparams = task_command.get('parameters', {}) or {}
 
-                    objects_to_detect = task_command.get('parameters', {}).get('objects_to_detect', [])
-                    activities_to_detect = task_command.get('parameters', {}).get('activities_to_detect', [])
+                    if task_command.get('requires_baseline') and task_id is None:
+                        task_id = tid
+                        target_object = task_command.get('target', '')
+                        expected_change = task_command.get('expected_change', '')
+                        requires_baseline = True
+                        query_type = task_command.get('query_type', 'object')
 
-                    if expected_change:
-                        adhoc_query = expected_change
-                    elif target_object:
-                        adhoc_query = target_object
-                    elif objects_to_detect:
-                        adhoc_query = ', '.join(objects_to_detect)
-                    elif activities_to_detect:
-                        adhoc_query = ', '.join(activities_to_detect)
-                    elif understood_intent:
-                        adhoc_query = understood_intent
+                    q = (
+                        task_command.get('expected_change')
+                        or task_command.get('target')
+                        or (', '.join(tparams.get('objects_to_detect', []) or []) or None)
+                        or (', '.join(tparams.get('activities_to_detect', []) or []) or None)
+                        or task_command.get('understood_intent')
+                    )
+                    if q:
+                        adhoc_queries.append(q)
+
+                # De-dup while preserving order so multi-arm of the same
+                # command doesn't inflate the rule list sent to Claude.
+                seen_q = set()
+                adhoc_queries = [q for q in adhoc_queries if not (q in seen_q or seen_q.add(q))]
 
                 all_queries = list(db_task_queries)
                 has_monitoring_tasks = len(db_task_queries) > 0
-                if adhoc_query:
-                    all_queries.append(adhoc_query)
+                for q in adhoc_queries:
+                    if q not in all_queries:
+                        all_queries.append(q)
 
                 if len(all_queries) == 1:
                     user_query = all_queries[0]
@@ -771,6 +848,30 @@ async def lifespan(app: FastAPI):
         logger.info("Database initialized")
     except Exception as e:
         logger.warning(f"Database initialization failed (continuing): {e}")
+
+    # Lightweight, idempotent column migrations. `init_db()` only creates
+    # tables that don't exist — it never adds columns to existing tables,
+    # so we bring older databases up to the latest schema here.
+    try:
+        from sqlalchemy import text as _sql_text
+        from database import engine as _engine
+        with _engine.begin() as _conn:
+            _conn.execute(_sql_text(
+                "ALTER TABLE camera_tasks "
+                "ADD COLUMN IF NOT EXISTS source VARCHAR(50) "
+                "NOT NULL DEFAULT 'manual'"
+            ))
+            _conn.execute(_sql_text(
+                "ALTER TABLE camera_tasks "
+                "ADD COLUMN IF NOT EXISTS original_command TEXT"
+            ))
+            _conn.execute(_sql_text(
+                "CREATE INDEX IF NOT EXISTS ix_camera_tasks_source "
+                "ON camera_tasks (source)"
+            ))
+        logger.info("Schema migration: camera_tasks.source/original_command ready")
+    except Exception as e:
+        logger.warning(f"camera_tasks schema migration skipped: {e}")
 
     # Auto-restart cameras that were active before the last shutdown.
     # Workers are in-memory only and don't survive a process restart, so any

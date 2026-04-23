@@ -1,16 +1,26 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSurveillance } from '../contexts/SurveillanceContext';
 import { formatDistanceToNow } from 'date-fns';
 import wsService from '../services/websocket';
-import { searchApi, SceneSearchResult, SceneSearchMatch } from '../services/api';
+import {
+  searchApi,
+  SceneSearchResult,
+  SceneSearchMatch,
+  aiCommandApi,
+  AiCommand,
+  PendingAiCommand,
+} from '../services/api';
 import { utcToDate } from '../utils/time';
 
 interface CommandResponse {
   type: string;
   confirmation?: string;
   understood_intent?: string;
+  detection_target?: string;
   task_type?: string;
   message?: string;
+  armed_cameras?: number[];
+  pending?: boolean;
   timestamp?: string;
 }
 
@@ -50,6 +60,9 @@ const IntelligencePage: React.FC = () => {
   const [history, setHistory] = useState<string[]>([]);
   const [responses, setResponses] = useState<CommandResponse[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [activeCommands, setActiveCommands] = useState<AiCommand[]>([]);
+  const [pendingCommands, setPendingCommands] = useState<PendingAiCommand[]>([]);
+  const [cancellingCommand, setCancellingCommand] = useState<string | null>(null);
 
   // Search tab state
   const [searchQuery, setSearchQuery] = useState('');
@@ -66,11 +79,45 @@ const IntelligencePage: React.FC = () => {
     }
   }, [narrations]);
 
+  const refreshAiCommands = useCallback(async () => {
+    try {
+      const list = await aiCommandApi.list();
+      setActiveCommands(list.active);
+      setPendingCommands(list.pending);
+    } catch {
+      // Non-fatal — the list is decorative.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshAiCommands();
+  }, [refreshAiCommands]);
+
   useEffect(() => {
     const handler = (message: any) => {
       if (message.type === 'command_processed') {
-        setResponses((p) => [{ type: 'processed', confirmation: message.data?.confirmation, understood_intent: message.data?.understood_intent, task_type: message.data?.task_type, timestamp: message.timestamp }, ...p].slice(0, 5));
+        const armed: number[] = message.data?.armed_cameras ?? [];
+        const pending: boolean = !!message.data?.pending;
+        const queuedMsg: string | undefined = message.data?.queued_message;
+        setResponses((p) => [{
+          type: pending ? 'info' : 'processed',
+          confirmation: message.data?.confirmation,
+          understood_intent: message.data?.understood_intent,
+          detection_target: message.data?.detection_target,
+          task_type: message.data?.task_type,
+          armed_cameras: armed,
+          pending,
+          message: pending
+            ? queuedMsg
+            : armed.length > 0
+              ? `Armed on ${armed.length} camera${armed.length === 1 ? '' : 's'}: ${armed.join(', ')}`
+              : undefined,
+          timestamp: message.timestamp,
+        }, ...p].slice(0, 5));
         setIsProcessing(false);
+        refreshAiCommands();
+      } else if (message.type === 'ai_command_changed') {
+        refreshAiCommands();
       } else if (message.type === 'task_started' || message.type === 'camera_started') {
         setResponses((p) => [{ type: 'info', message: message.data?.message, timestamp: message.timestamp }, ...p].slice(0, 5));
       } else if (message.type === 'task_alert') {
@@ -82,7 +129,19 @@ const IntelligencePage: React.FC = () => {
     };
     wsService.addHandler('/ws/system', handler);
     return () => wsService.removeHandler('/ws/system', handler);
-  }, []);
+  }, [refreshAiCommands]);
+
+  const cancelCommand = async (originalCommand: string) => {
+    setCancellingCommand(originalCommand);
+    try {
+      await aiCommandApi.cancel(originalCommand);
+      await refreshAiCommands();
+    } catch (err) {
+      // Swallow — WS event will eventually resync; surface a toast in future.
+    } finally {
+      setCancellingCommand(null);
+    }
+  };
 
   const submit = (cmd: string) => {
     if (!cmd.trim()) return;
@@ -237,6 +296,89 @@ const IntelligencePage: React.FC = () => {
                   ))}
                 </div>
               </div>
+
+              {(activeCommands.length > 0 || pendingCommands.length > 0) && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-medium text-stone-500">
+                      Active AI Commands
+                    </p>
+                    <span className="text-xs text-stone-400">
+                      {activeCommands.length} armed
+                      {pendingCommands.length > 0 && ` · ${pendingCommands.length} queued`}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {activeCommands.map((cmd) => {
+                      const isCancelling = cancellingCommand === cmd.original_command;
+                      return (
+                        <div
+                          key={cmd.original_command}
+                          className="text-xs p-2.5 rounded-md border bg-green-50 border-green-200"
+                        >
+                          <div className="flex items-start gap-2">
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium text-green-800 break-words">
+                                {cmd.original_command}
+                              </p>
+                              {cmd.detection_target && cmd.detection_target !== cmd.original_command && (
+                                <p className="text-green-700/80 italic mt-0.5 break-words">
+                                  detects: {cmd.detection_target}
+                                </p>
+                              )}
+                              <div className="mt-1.5 flex flex-wrap gap-1">
+                                {cmd.cameras.map((c) => (
+                                  <span
+                                    key={c.task_id}
+                                    className="px-1.5 py-0.5 rounded border bg-white/60 border-green-200 text-green-800"
+                                    title={c.camera_location ?? undefined}
+                                  >
+                                    {c.camera_name}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => cancelCommand(cmd.original_command)}
+                              disabled={isCancelling}
+                              className="text-xs px-2 py-1 rounded border border-green-300 bg-white text-green-800 hover:bg-green-100 disabled:opacity-50"
+                            >
+                              {isCancelling ? 'Cancelling…' : 'Cancel'}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {pendingCommands.map((cmd) => {
+                      const isCancelling = cancellingCommand === cmd.original_command;
+                      return (
+                        <div
+                          key={`pending-${cmd.original_command}`}
+                          className="text-xs p-2.5 rounded-md border bg-amber-50 border-amber-200"
+                        >
+                          <div className="flex items-start gap-2">
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium text-amber-800 break-words">
+                                {cmd.original_command}
+                              </p>
+                              <p className="text-amber-700/80 italic mt-0.5">
+                                queued · no cameras active — will arm the next camera to come online
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => cancelCommand(cmd.original_command)}
+                              disabled={isCancelling}
+                              className="text-xs px-2 py-1 rounded border border-amber-300 bg-white text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                            >
+                              {isCancelling ? 'Cancelling…' : 'Cancel'}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {responses.length > 0 && (
                 <div>

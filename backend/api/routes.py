@@ -1173,6 +1173,8 @@ async def get_camera_tasks(
             "is_default": t.is_default,
             "is_active": t.is_active,
             "priority": t.priority,
+            "source": getattr(t, "source", "manual") or "manual",
+            "original_command": getattr(t, "original_command", None),
             "created_at": t.created_at.isoformat() if t.created_at else None,
         }
         for t in tasks
@@ -1277,6 +1279,114 @@ async def delete_camera_task(
     db.delete(task)
     db.commit()
     return {"status": "deleted", "task_id": task_id}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI Commands (Intelligence page)
+#
+# An "AI Command" is a natural-language instruction the user types on the
+# Intelligence page (e.g. "alert me if you see any water bottle"). Under the
+# hood it fans out into one `CameraTask` row per live camera, all sharing the
+# same `original_command` text and `source="ai_command"`. These endpoints
+# expose the command-level view (group-by original_command) plus cancellation.
+# ─────────────────────────────────────────────────────────────────────────────
+@router.get("/ai-commands")
+async def list_ai_commands(db: Session = Depends(get_db)):
+    """Return every active AI Command, grouped across cameras.
+
+    Shape:
+      {
+        "active": [ { "original_command", "detection_target", "task_type",
+                      "created_at", "cameras": [{camera_id, camera_name,
+                      camera_location, task_id}] } ],
+        "pending": [ { "original_command", "command", "task_type",
+                       "queued_at" } ]
+      }
+    """
+    import main as main_module
+
+    rows = (
+        db.query(CameraTask, Camera)
+        .join(Camera, CameraTask.camera_id == Camera.id)
+        .filter(
+            CameraTask.source == "ai_command",
+            CameraTask.is_active == True,  # noqa: E712
+        )
+        .order_by(CameraTask.created_at.desc())
+        .all()
+    )
+
+    groups: dict[str, dict] = {}
+    for task, cam in rows:
+        key = task.original_command or task.command
+        if key not in groups:
+            groups[key] = {
+                "original_command": task.original_command or task.command,
+                "detection_target": task.command,
+                "task_type": task.task_type,
+                "created_at": task.created_at.isoformat() if task.created_at else None,
+                "cameras": [],
+            }
+        groups[key]["cameras"].append({
+            "camera_id": cam.id,
+            "camera_name": cam.name,
+            "camera_location": cam.location,
+            "task_id": task.id,
+        })
+
+    return {
+        "active": list(groups.values()),
+        "pending": list(main_module.pending_ai_commands),
+    }
+
+
+@router.delete("/ai-commands")
+async def cancel_ai_command(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Disarm every camera running this AI Command and clear it from the
+    pending queue if queued.
+
+    Body: `{ "original_command": "..." }`
+    """
+    import main as main_module
+
+    original = (payload or {}).get("original_command", "").strip()
+    if not original:
+        raise HTTPException(status_code=400, detail="original_command is required")
+
+    deleted = (
+        db.query(CameraTask)
+        .filter(
+            CameraTask.source == "ai_command",
+            CameraTask.original_command == original,
+        )
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+
+    before = len(main_module.pending_ai_commands)
+    main_module.pending_ai_commands[:] = [
+        p for p in main_module.pending_ai_commands
+        if p.get("original_command") != original
+    ]
+    pending_removed = before - len(main_module.pending_ai_commands)
+
+    await manager.send_system_message("ai_command_changed", {
+        "reason": "cancelled",
+        "original_command": original,
+        "deleted_rows": deleted,
+        "pending_removed": pending_removed,
+    })
+
+    return {
+        "status": "cancelled",
+        "original_command": original,
+        "deleted_rows": deleted,
+        "pending_removed": pending_removed,
+    }
 
 
 @router.get("/events")
@@ -1757,74 +1867,235 @@ async def handle_system_command(command: str, params: dict):
         await process_user_command(command, params)
 
 
+MONITORING_TASK_TYPES = {
+    "object_detection",
+    "activity_detection",
+    "state_change_detection",
+    "surveillance",
+    "scene_analysis",
+    "anomaly_detection",
+    "tracking",
+}
+
+
+def _derive_detection_target(parsed: dict, fallback: str) -> str:
+    """Collapse a parsed command into the short text the vision agent uses.
+
+    Priority mirrors what `_analysis_loop` already does for in-memory tasks:
+    `expected_change` → `target` → `objects_to_detect` → `activities_to_detect`
+    → `understood_intent` → original user command.
+    """
+    params = parsed.get("parameters") or {}
+    candidates = [
+        parsed.get("expected_change"),
+        parsed.get("target"),
+        ", ".join(params.get("objects_to_detect", []) or []),
+        ", ".join(params.get("activities_to_detect", []) or []),
+        parsed.get("understood_intent"),
+    ]
+    for c in candidates:
+        if isinstance(c, str) and c.strip():
+            return c.strip()
+    return fallback.strip()
+
+
 async def process_user_command(command: str, params: dict):
-    """
-    Process natural language user command with Gemini
+    """Parse a natural-language command from the Intelligence page and arm it
+    across every active camera.
 
-    Args:
-        command: User's natural language command
-        params: Additional parameters
+    Behaviour:
+    - Parse the command ONCE with any available CommandAgent (per-camera if
+      present, otherwise the global fallback).
+    - For monitoring-style task types, persist the parsed target as a
+      `CameraTask` row (`source="ai_command"`) for every currently active
+      camera. DB persistence means it survives backend restarts and is
+      picked up by the same high-sensitivity path the Cameras page uses.
+    - If no cameras are active, enqueue the command so the very next camera
+      that comes online attaches it automatically.
+    - Emit a single `command_processed` message that tells the UI *how many
+      cameras were armed* and surface any per-camera failures.
     """
+    import main as main_module
+
+    original_command = command
+    active_camera_ids: list[int] = list(camera_service.active_cameras.keys())
+    context = {
+        "active_cameras": active_camera_ids,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+    # ── 1. Pick a parser. Prefer an existing per-camera agent; else global. ──
+    target_camera_id = params.get("camera_id")
+    parse_agent = None
+    if target_camera_id and target_camera_id in main_module.camera_command_agents:
+        parse_agent = main_module.camera_command_agents[target_camera_id]
+    elif main_module.camera_command_agents:
+        parse_agent = next(iter(main_module.camera_command_agents.values()))
+    else:
+        parse_agent = main_module.command_agent
+
+    # ── 2. Parse once. ──────────────────────────────────────────────────────
     try:
-        # Get current context
-        active_camera_ids = list(camera_service.active_cameras.keys())
-        context = {
-            "active_cameras": active_camera_ids,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-
-        # Route command to the correct per-camera CommandAgent(s)
-        import main as main_module
-        target_camera_id = params.get("camera_id")
-
-        if target_camera_id and target_camera_id in main_module.camera_command_agents:
-            # Command targeted at a specific camera
-            agent = main_module.camera_command_agents[target_camera_id]
-        elif main_module.camera_command_agents:
-            # Broadcast to all active camera agents (use first for response)
-            agent = list(main_module.camera_command_agents.values())[0]
-            # Also send to remaining agents
-            for cam_agent in list(main_module.camera_command_agents.values())[1:]:
-                try:
-                    await cam_agent.process_command(command, context)
-                except Exception:
-                    pass
-        else:
-            agent = main_module.command_agent  # Fallback
-
-        result = await agent.process_command(command, context)
-
-        # Send confirmation to user
-        await manager.send_system_message("command_processed", {
-            "original_command": command,
-            "task_id": result.get('task_id'),
-            "task_type": result.get('task_type'),
-            "confirmation": result.get('confirmation'),
-            "understood_intent": result.get('understood_intent'),
-            "parameters": result.get('parameters')
-        })
-
-        # Execute task based on type
-        task_type = result.get('task_type')
-
-        if task_type in ['object_detection', 'activity_detection', 'state_change_detection', 'surveillance', 'scene_analysis', 'anomaly_detection', 'tracking']:
-            # Start monitoring task
-            await start_monitoring_task(result)
-
-        elif task_type == 'alert':
-            # Create immediate alert
-            await manager.send_alert({
-                "severity": "INFO",
-                "title": "Command Alert",
-                "message": result.get('confirmation'),
-                "camera_id": params.get("camera_id", 1)
-            })
-
+        parsed = await parse_agent.process_command(command, context)
     except Exception as e:
+        logger.exception("[AI-CMD] Parser failed")
         await manager.send_system_message("command_error", {
             "error": str(e),
-            "message": f"Failed to process command: {str(e)}"
+            "message": f"Failed to interpret command: {e}",
         })
+        return
+
+    if parsed.get("task_type") == "error":
+        await manager.send_system_message("command_error", {
+            "error": parsed.get("error", "unknown"),
+            "message": parsed.get("confirmation", "Failed to process command"),
+        })
+        return
+
+    task_type = parsed.get("task_type", "surveillance")
+    detection_target = _derive_detection_target(parsed, original_command)
+
+    # ── 3. Non-monitoring task types: short-circuit to alert-only path. ────
+    if task_type == "alert":
+        await manager.send_alert({
+            "severity": "INFO",
+            "title": "Command Alert",
+            "message": parsed.get("confirmation", original_command),
+            "camera_id": params.get("camera_id", 1),
+        })
+        await manager.send_system_message("command_processed", {
+            "original_command": original_command,
+            "task_id": parsed.get("task_id"),
+            "task_type": task_type,
+            "confirmation": parsed.get("confirmation"),
+            "understood_intent": parsed.get("understood_intent"),
+            "armed_cameras": [],
+            "pending": False,
+        })
+        return
+
+    if task_type not in MONITORING_TASK_TYPES:
+        # Nothing persistent to do — just echo the parsed interpretation.
+        await manager.send_system_message("command_processed", {
+            "original_command": original_command,
+            "task_id": parsed.get("task_id"),
+            "task_type": task_type,
+            "confirmation": parsed.get("confirmation"),
+            "understood_intent": parsed.get("understood_intent"),
+            "armed_cameras": [],
+            "pending": False,
+        })
+        return
+
+    # ── 4. Fan out to every live camera concurrently. ──────────────────────
+    target_cameras: list[int] = (
+        [target_camera_id]
+        if target_camera_id and target_camera_id in camera_service.active_cameras
+        else active_camera_ids
+    )
+
+    if not target_cameras:
+        # Queue until a camera comes online. `start_camera_worker` flushes this.
+        main_module.pending_ai_commands.append({
+            "original_command": original_command,
+            "command": detection_target,
+            "task_type": task_type,
+            "priority": 2,
+            "queued_at": datetime.utcnow().isoformat(),
+        })
+        logger.info(
+            f"[AI-CMD] Queued (no active cameras): '{original_command}' → '{detection_target}'"
+        )
+        await manager.send_system_message("command_processed", {
+            "original_command": original_command,
+            "task_id": parsed.get("task_id"),
+            "task_type": task_type,
+            "confirmation": parsed.get("confirmation"),
+            "understood_intent": parsed.get("understood_intent"),
+            "detection_target": detection_target,
+            "armed_cameras": [],
+            "pending": True,
+            "queued_message": (
+                "No cameras are running. Command queued — it will arm the next "
+                "camera that comes online."
+            ),
+        })
+        return
+
+    async def _persist_one(cam_id: int) -> dict:
+        """Persist one CameraTask row for one camera. Runs in a thread."""
+        def _sync():
+            from database import SessionLocal
+            db = SessionLocal()
+            try:
+                existing = (
+                    db.query(CameraTask)
+                    .filter(
+                        CameraTask.camera_id == cam_id,
+                        CameraTask.source == "ai_command",
+                        CameraTask.original_command == original_command,
+                        CameraTask.is_active == True,  # noqa: E712
+                    )
+                    .first()
+                )
+                if existing:
+                    return {"camera_id": cam_id, "status": "already_armed", "task_id": existing.id}
+
+                task_row = CameraTask(
+                    camera_id=cam_id,
+                    command=detection_target,
+                    task_type=task_type,
+                    is_default=False,
+                    is_active=True,
+                    priority=2,
+                    source="ai_command",
+                    original_command=original_command,
+                )
+                db.add(task_row)
+                db.commit()
+                db.refresh(task_row)
+                return {"camera_id": cam_id, "status": "armed", "task_id": task_row.id}
+            except Exception as exc:
+                db.rollback()
+                return {"camera_id": cam_id, "status": "error", "error": str(exc)}
+            finally:
+                db.close()
+
+        import asyncio as _asyncio
+        return await _asyncio.to_thread(_sync)
+
+    import asyncio as _asyncio
+    results = await _asyncio.gather(
+        *[_persist_one(cid) for cid in target_cameras],
+        return_exceptions=False,
+    )
+
+    armed = [r for r in results if r.get("status") in ("armed", "already_armed")]
+    failed = [r for r in results if r.get("status") == "error"]
+
+    logger.info(
+        f"[AI-CMD] '{original_command}' → target='{detection_target}' "
+        f"armed={len(armed)}/{len(target_cameras)} failed={len(failed)}"
+    )
+
+    await manager.send_system_message("command_processed", {
+        "original_command": original_command,
+        "task_id": parsed.get("task_id"),
+        "task_type": task_type,
+        "confirmation": parsed.get("confirmation"),
+        "understood_intent": parsed.get("understood_intent"),
+        "detection_target": detection_target,
+        "armed_cameras": [r["camera_id"] for r in armed],
+        "failed_cameras": [{"camera_id": r["camera_id"], "error": r.get("error")} for r in failed],
+        "pending": False,
+    })
+
+    # Tell the UI the armed-commands panel needs to re-fetch.
+    await manager.send_system_message("ai_command_changed", {
+        "reason": "armed",
+        "original_command": original_command,
+        "armed_cameras": [r["camera_id"] for r in armed],
+    })
 
 
 async def start_monitoring_task(task_command: dict):

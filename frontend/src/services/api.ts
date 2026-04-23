@@ -208,6 +208,53 @@ export const searchApi = {
   },
 };
 
+export interface AiCommandCamera {
+  camera_id: number;
+  camera_name: string;
+  camera_location: string | null;
+  task_id: number;
+}
+
+export interface AiCommand {
+  original_command: string;
+  detection_target: string;
+  task_type: string;
+  created_at: string | null;
+  cameras: AiCommandCamera[];
+}
+
+export interface PendingAiCommand {
+  original_command: string;
+  command: string;
+  task_type: string;
+  priority?: number;
+  queued_at: string;
+}
+
+export interface AiCommandList {
+  active: AiCommand[];
+  pending: PendingAiCommand[];
+}
+
+export const aiCommandApi = {
+  list: async (): Promise<AiCommandList> => {
+    const response = await api.get('/ai-commands');
+    return response.data;
+  },
+
+  cancel: async (originalCommand: string): Promise<{
+    status: string;
+    original_command: string;
+    deleted_rows: number;
+    pending_removed: number;
+  }> => {
+    const response = await api.delete('/ai-commands', {
+      data: { original_command: originalCommand },
+    });
+    return response.data;
+  },
+};
+
 export const statsApi = {
   getSummary: async (hours: number = 24): Promise<SummaryStats> => {
     const response = await api.get('/stats/summary', { params: { hours } });
