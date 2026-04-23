@@ -54,12 +54,25 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         setAuthToken(storedToken);
 
         try {
-          // Verify token and get user data
-          const userData = await authApi.getCurrentUser();
+          // Verify token and get user data. If the backend is unreachable
+          // (e.g. the user clicked an email link but their local FastAPI
+          // isn't running) we race against a hard timeout so the UI falls
+          // back to the login screen instead of an infinite spinner.
+          const userData = await Promise.race([
+            authApi.getCurrentUser(),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error('auth_bootstrap_timeout')),
+                8000,
+              ),
+            ),
+          ]);
           setUser(userData);
         } catch (error) {
           console.error('Failed to load user data:', error);
-          // Invalid token, clear it
+          // Clear the stale token so /login renders cleanly. We don't
+          // nuke it on genuine network blips alone — but since we can
+          // retry by refreshing, this is the safe default.
           localStorage.removeItem('auth_token');
           setToken(null);
           setAuthToken(null);

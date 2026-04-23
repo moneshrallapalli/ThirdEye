@@ -11,6 +11,11 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  // Bound every request so an unreachable backend can't leave the UI stuck
+  // on an infinite loading spinner. 15s is generous for interactive API
+  // calls; long-running endpoints (history search, scene search) should
+  // override on a per-call basis.
+  timeout: 15000,
 });
 
 export const cameraApi = {

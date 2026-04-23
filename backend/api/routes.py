@@ -4,7 +4,7 @@ API routes for SentinTinel Surveillance System
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 try:
     from zoneinfo import ZoneInfo
@@ -1640,6 +1640,112 @@ async def delete_alert(alert_id: int, db: Session = Depends(get_db)):
     db.delete(alert)
     db.commit()
     return {"deleted": alert_id}
+
+
+@router.post("/email/test-alert")
+async def send_test_alert_email(
+    payload: Optional[Dict[str, Any]] = None,
+    current_user: User = Depends(get_current_active_user),
+):
+    """Send a realistic sample alert email so the operator can verify the
+    layout, logo, and timezone without having to trigger a real event.
+
+    Body (all fields optional):
+        {
+          "recipient": "override@example.com",  # defaults to current user
+          "variant": "critical" | "warning" | "summary"
+        }
+    """
+    from services.email_service import email_service
+    from services.brand_assets import render_test_frame_png
+
+    if not email_service.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Email service not configured — set GMAIL_USER and "
+                "GMAIL_APP_PASSWORD in your environment."
+            ),
+        )
+
+    body = payload or {}
+    recipient = (body.get("recipient") or current_user.email or "").strip()
+    variant = (body.get("variant") or "critical").lower()
+
+    # Generate a deterministic placeholder "camera frame" so the Evidence
+    # section renders exactly like a real alert.
+    try:
+        frame_png = render_test_frame_png()
+        frame_b64 = base64.b64encode(frame_png).decode("utf-8")
+    except Exception as exc:
+        logger.warning(f"Test frame render failed: {exc}")
+        frame_b64 = None
+
+    now_iso = datetime.utcnow().isoformat()
+
+    base_payload = {
+        "timestamp": now_iso,
+        "camera_id": 0,
+        "camera_name": "Outdoor (test)",
+        "frame_base64": frame_b64,
+        "detected_objects": ["person", "delivery bag", "doormat"],
+        "scene_description": (
+            "A person in a rain jacket is standing at the front door with a "
+            "small cardboard package held under their left arm. The porch "
+            "light is on. No one else is visible in the frame."
+        ),
+        "activity": "Person approaching the front door with a package",
+    }
+
+    if variant == "summary":
+        alert_payload = {
+            **base_payload,
+            "severity": "INFO",
+            "title": "Nothing unusual in the last 2 minutes",
+            "message": (
+                "This is a test summary email.\n\n"
+                "ThirdEye would normally use this layout for a routine "
+                "digest when no alert rules matched during the window."
+            ),
+            "significance": 45,
+        }
+        ok = await email_service.send_summary_email(alert_payload, recipient=recipient)
+    else:
+        severity = "CRITICAL" if variant == "critical" else "WARNING"
+        confidence = 92 if severity == "CRITICAL" else 71
+        alert_payload = {
+            **base_payload,
+            "severity": severity,
+            "title": "Trigger matched: Person At Front Door",
+            "message": (
+                f"Camera Outdoor (test) matched your monitoring trigger with "
+                f"{confidence}% confidence.\n\n"
+                f"This is a test email sent by the developer — it is not a "
+                f"real event."
+            ),
+            "user_query": "Notify me if someone enters my home",
+            "query_confidence": confidence,
+            "query_details": (
+                "Rule matched: a person carrying a package is visible at the "
+                "front door, which qualifies as someone entering the home."
+            ),
+            "claude_reasoning": (
+                "The subject is walking deliberately toward the door while "
+                "holding a package. Lighting, posture, and direction of travel "
+                "are consistent with an entry event rather than a passer-by."
+            ),
+        }
+        ok = await email_service.send_critical_alert(alert_payload, recipient=recipient)
+
+    if not ok:
+        raise HTTPException(status_code=502, detail="SMTP send failed — see backend logs.")
+
+    return {
+        "status": "sent",
+        "recipient": recipient,
+        "variant": variant,
+        "subject_hint": f"[ThirdEye • {alert_payload['severity'].title()}] {alert_payload.get('title')}",
+    }
 
 
 @router.get("/stats/summary")

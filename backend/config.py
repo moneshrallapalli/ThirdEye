@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     # Leave empty to use the server's local timezone.
     DISPLAY_TIMEZONE: str = ""
 
+    # Public URL of the web app. Used in email CTAs (e.g. "Open ThirdEye →").
+    # Override in .env with APP_PUBLIC_URL=https://thirdeye.example.com
+    APP_PUBLIC_URL: str = "http://localhost:3000"
+
     @property
     def database_url(self) -> str:
         """Construct PostgreSQL database URL"""

@@ -26,6 +26,7 @@ except ImportError:  # Python < 3.9 fallback
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import settings
+from services.brand_assets import render_thirdeye_logo_png
 
 
 # ─────────────────────────────────────────────────────────────
@@ -177,61 +178,124 @@ def _reason_row(label: str, value: Optional[str]) -> str:
     """
 
 
-def _brand_header() -> str:
-    """ThirdEye mark + wordmark rendered in the warm theme."""
+def _app_url(path: str = "/dashboard") -> str:
+    """Build a fully-qualified URL into the ThirdEye web app.
+
+    Defaults to ``/dashboard`` rather than ``/`` because the root route
+    performs an auth redirect that can stall the UI indefinitely when
+    the backend is unreachable — deep-linking skips that bounce and
+    lands authenticated users straight on the surveillance view (or the
+    login page via ProtectedRoute if they're signed out).
+    """
+    base = (getattr(settings, "APP_PUBLIC_URL", "") or "").strip()
+    if not base:
+        base = "http://localhost:3000"
+    base = base.rstrip("/")
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}"
+
+
+def _brand_header(eyebrow: str) -> str:
+    """ThirdEye header: real eye-mark PNG + wordmark + severity eyebrow.
+
+    Email clients strip ``display:flex`` in many places (Outlook, parts of
+    Gmail web), so we rely on a single-row table with valign=middle for
+    vertical alignment. The logo is referenced by CID and attached by
+    ``EmailService._send``.
+    """
     return f"""
-    <div style="padding:20px 28px 0 28px;">
-      <div style="display:flex;align-items:center;gap:10px;">
-        <div style="width:26px;height:26px;border-radius:50%;
-                    background:{THEME['text_primary']};
-                    display:inline-flex;align-items:center;justify-content:center;">
-          <div style="width:10px;height:10px;border-radius:50%;
-                      background:{THEME['bg_surface']};"></div>
-        </div>
-        <div style="font-family:{FONT_STACK_DISPLAY};font-weight:700;
-                    font-size:16px;letter-spacing:-0.02em;
-                    color:{THEME['text_primary']};">
-          ThirdEye
-        </div>
-      </div>
-    </div>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+           width="100%" style="padding:24px 28px 8px 28px;">
+      <tr>
+        <td valign="middle" width="56" style="width:56px;padding:0 14px 0 0;">
+          <img src="cid:thirdeye_logo"
+               alt="ThirdEye"
+               width="56" height="42"
+               style="display:block;width:56px;height:42px;border:0;outline:none;" />
+        </td>
+        <td valign="middle">
+          <div style="font-family:{FONT_STACK_DISPLAY};font-weight:700;
+                      font-size:17px;letter-spacing:-0.02em;line-height:1.1;
+                      color:{THEME['text_primary']};">
+            ThirdEye
+          </div>
+          <div style="margin-top:2px;font-size:11px;letter-spacing:0.08em;
+                      text-transform:uppercase;color:{THEME['text_muted']};
+                      font-weight:500;">
+            {eyebrow}
+          </div>
+        </td>
+        <td valign="middle" align="right" style="text-align:right;">
+          <a href="{_app_url()}"
+             style="display:inline-block;padding:8px 14px;border-radius:8px;
+                    background:{THEME['text_primary']};color:{THEME['ink_inverse']};
+                    text-decoration:none;font-size:12px;font-weight:600;
+                    letter-spacing:0.01em;">
+            Open ThirdEye →
+          </a>
+        </td>
+      </tr>
+    </table>
     """
 
 
 def _footer() -> str:
     return f"""
-    <div style="padding:18px 28px;background:{THEME['bg_subtle']};
+    <div style="padding:20px 28px;background:{THEME['bg_subtle']};
                 border-top:1px solid {THEME['border']};
                 text-align:center;font-size:11px;color:{THEME['text_muted']};
-                letter-spacing:0.04em;">
-      ThirdEye — AI-powered intelligent monitoring
+                letter-spacing:0.02em;line-height:1.55;">
+      <div style="font-weight:600;color:{THEME['text_secondary']};
+                  letter-spacing:0.08em;text-transform:uppercase;
+                  font-size:10px;">ThirdEye</div>
+      <div style="margin-top:4px;">AI-powered intelligent monitoring</div>
+      <div style="margin-top:10px;color:{THEME['text_faint']};">
+        You are receiving this alert because it matched an active monitoring
+        trigger on your account.
+      </div>
     </div>
     """
 
 
 def _shell(inner_html: str, severity_bar: str) -> str:
-    """Outer email shell with warm cream background."""
-    return f"""
-    <!DOCTYPE html>
-    <html><head><meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    </head>
-    <body style="margin:0;padding:24px;background:{THEME['bg_page']};
-                 font-family:{FONT_STACK_BODY};color:{THEME['text_primary']};
-                 line-height:1.55;">
-      <div style="max-width:620px;margin:0 auto;background:{THEME['bg_surface']};
-                  border:1px solid {THEME['border']};border-radius:14px;
-                  overflow:hidden;box-shadow:0 1px 2px rgba(26,23,20,0.04);">
-        <div style="height:3px;background:{severity_bar};"></div>
-        {inner_html}
-      </div>
-      <div style="max-width:620px;margin:10px auto 0 auto;
-                  font-size:11px;color:{THEME['text_faint']};text-align:center;">
-        You are receiving this alert because it matched an active monitoring
-        trigger on your ThirdEye account.
-      </div>
-    </body></html>
+    """Outer email shell with warm cream background.
+
+    Uses a table-based outer container (Outlook-friendly) wrapping a
+    rounded white card. A thin colored rail at the top encodes severity
+    without relying on emoji or special fonts.
     """
+    return f"""<!DOCTYPE html>
+<html><head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ThirdEye alert</title>
+</head>
+<body style="margin:0;padding:0;background:{THEME['bg_page']};
+             font-family:{FONT_STACK_BODY};color:{THEME['text_primary']};
+             line-height:1.55;-webkit-font-smoothing:antialiased;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+         width="100%" bgcolor="{THEME['bg_page']}"
+         style="background:{THEME['bg_page']};padding:28px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+               width="620" style="max-width:620px;width:100%;
+               background:{THEME['bg_surface']};
+               border:1px solid {THEME['border']};border-radius:16px;
+               overflow:hidden;box-shadow:0 1px 3px rgba(26,23,20,0.06);">
+          <tr><td style="height:3px;background:{severity_bar};font-size:0;line-height:0;">&nbsp;</td></tr>
+          <tr><td>{inner_html}</td></tr>
+        </table>
+        <div style="max-width:620px;margin:12px auto 0 auto;
+                    font-size:11px;color:{THEME['text_faint']};text-align:center;">
+          Secured inbox • ThirdEye Intelligent Monitoring
+        </div>
+      </td>
+    </tr>
+  </table>
+</body></html>
+"""
 
 
 class EmailService:
@@ -248,15 +312,47 @@ class EmailService:
         else:
             logger.info(f"Gmail SMTP email service initialized - alerts will send to {self.recipient_email}")
 
-    async def _send(self, subject: str, html_body: str, frame_base64: str = None) -> bool:
+    async def _send(
+        self,
+        subject: str,
+        html_body: str,
+        frame_base64: Optional[str] = None,
+        recipient: Optional[str] = None,
+    ) -> bool:
+        """Send a multipart email with the ThirdEye logo attached inline.
+
+        The logo is always attached via CID so the header in every email
+        renders the same eye-mark the user sees in the web UI, regardless
+        of the client's SVG/remote-image policies.
+        """
+        to_addr = (recipient or self.recipient_email).strip()
+
         message = MIMEMultipart("related")
         message["Subject"] = subject
         message["From"] = f"ThirdEye <{self.gmail_user}>"
-        message["To"] = self.recipient_email
+        message["To"] = to_addr
 
         html_part = MIMEMultipart("alternative")
+        # Plain-text fallback — stripped-down subject line. Keeps spam
+        # filters happier and readers in terminal mail clients sane.
+        text_fallback = (
+            f"{subject}\n\n"
+            "View this alert in ThirdEye. Your email client is showing the"
+            " text-only fallback because HTML is disabled."
+        )
+        html_part.attach(MIMEText(text_fallback, "plain"))
         html_part.attach(MIMEText(html_body, "html"))
         message.attach(html_part)
+
+        # Always attach the brand mark — header references cid:thirdeye_logo.
+        try:
+            logo_bytes = render_thirdeye_logo_png(width=180, height=134)
+            logo_img = MIMEImage(logo_bytes, _subtype="png")
+            logo_img.add_header("Content-ID", "<thirdeye_logo>")
+            logo_img.add_header("Content-Disposition", "inline", filename="thirdeye-logo.png")
+            message.attach(logo_img)
+        except Exception as e:
+            logger.warning(f"Could not attach brand logo: {e}")
 
         if frame_base64:
             try:
@@ -282,8 +378,20 @@ class EmailService:
     # Public senders
     # ────────────────────────────────────────────
 
-    async def send_critical_alert(self, alert_data: Dict[str, Any]) -> bool:
-        """Send a trigger-matched alert email."""
+    async def send_critical_alert(
+        self,
+        alert_data: Dict[str, Any],
+        recipient: Optional[str] = None,
+    ) -> bool:
+        """Send a trigger-matched alert email.
+
+        Args:
+            alert_data: Rich alert payload (same shape persisted in
+                ``Alert.alert_metadata``).
+            recipient: Override the default self-notification recipient.
+                Used by ``POST /api/email/test-alert`` so a developer can
+                verify layout by mailing their own account.
+        """
         if not self.enabled:
             return False
 
@@ -291,6 +399,7 @@ class EmailService:
             title            = alert_data.get("title", "Trigger matched")
             message          = alert_data.get("message", "")
             camera_id        = alert_data.get("camera_id")
+            camera_name      = alert_data.get("camera_name")
             timestamp        = alert_data.get("timestamp")
             severity         = (alert_data.get("severity") or "CRITICAL").upper()
             significance     = alert_data.get("significance")
@@ -307,14 +416,16 @@ class EmailService:
             sev = SEVERITY_STYLES.get(severity, SEVERITY_STYLES["INFO"])
             time_str = _format_timestamp(timestamp)
 
+            camera_label = camera_name if camera_name else (f"Camera {camera_id}" if camera_id is not None else None)
+
             severity_chip = _chip(
                 sev["label"],
                 bg=sev["bg"], fg=sev["text"], border=sev["border"],
             )
             meta_chips = severity_chip
-            if camera_id is not None:
+            if camera_label:
                 meta_chips += _chip(
-                    f"Camera {camera_id}",
+                    camera_label,
                     bg=THEME["bg_subtle"], fg=THEME["text_secondary"],
                     border=THEME["border"],
                 )
@@ -325,29 +436,42 @@ class EmailService:
                     border=THEME["border"],
                 )
 
-            trigger_chip = ""
+            trigger_row = ""
             if user_query:
-                trigger_chip = f"""
-                <div style="margin-top:8px;font-size:12px;color:{THEME['text_muted']};">
-                  Triggered by your rule:
-                  <span style="color:{THEME['text_primary']};font-weight:500;">
-                    &ldquo;{user_query}&rdquo;
-                  </span>
+                trigger_row = f"""
+                <div style="margin-top:14px;padding:12px 14px;
+                            background:{THEME['bg_subtle']};
+                            border:1px solid {THEME['border']};
+                            border-radius:10px;">
+                  <div style="font-size:10px;text-transform:uppercase;
+                              letter-spacing:0.1em;font-weight:600;
+                              color:{THEME['text_muted']};">
+                    Triggered by your rule
+                  </div>
+                  <div style="margin-top:4px;font-size:14px;
+                              color:{THEME['text_primary']};font-weight:500;
+                              white-space:pre-line;">
+                    {user_query}
+                  </div>
                 </div>
                 """
 
             content_html = f"""
-            {_brand_header()}
-            <div style="padding:16px 28px 4px 28px;">
+            {_brand_header(f"{sev['label']} alert")}
+            <div style="padding:6px 28px 0 28px;">
               <div>{meta_chips}</div>
-              <h1 style="margin:12px 0 0 0;font-family:{FONT_STACK_DISPLAY};
-                         font-size:22px;font-weight:600;letter-spacing:-0.02em;
-                         color:{THEME['text_primary']};line-height:1.25;">
+              <h1 style="margin:14px 0 0 0;font-family:{FONT_STACK_DISPLAY};
+                         font-size:24px;font-weight:600;letter-spacing:-0.02em;
+                         color:{THEME['text_primary']};line-height:1.22;">
                 {title}
               </h1>
-              {trigger_chip}
+              <div style="margin-top:6px;font-size:12.5px;color:{THEME['text_muted']};
+                          letter-spacing:0.01em;">
+                Captured {time_str}
+              </div>
+              {trigger_row}
             </div>
-            <div style="padding:14px 28px 22px 28px;">
+            <div style="padding:14px 28px 24px 28px;">
               <p style="margin:14px 0 0 0;font-size:14.5px;line-height:1.65;
                         color:{THEME['text_secondary']};white-space:pre-line;">
                 {message}
@@ -358,26 +482,25 @@ class EmailService:
               {_reason_row("Activity", activity)}
               {_object_chips(detected_objects)}
               {_evidence_image_html(bool(frame_base64), "Frame analysed by the model")}
-              <div style="margin-top:22px;padding-top:14px;
-                          border-top:1px solid {THEME['border']};
-                          font-size:12px;color:{THEME['text_muted']};">
-                Captured <span style="color:{THEME['text_primary']};">{time_str}</span>
-              </div>
             </div>
             {_footer()}
             """
 
             html_body = _shell(content_html, severity_bar=sev["bar"])
             subject = f"[ThirdEye • {sev['label']}] {title}"
-            await self._send(subject, html_body, frame_base64)
-            logger.info(f"Critical alert email sent: {title}")
+            await self._send(subject, html_body, frame_base64, recipient=recipient)
+            logger.info(f"Critical alert email sent to {recipient or self.recipient_email}: {title}")
             return True
 
         except Exception as e:
             logger.error(f"Failed to send critical alert email: {e}")
             return False
 
-    async def send_summary_email(self, alert_data: Dict[str, Any]) -> bool:
+    async def send_summary_email(
+        self,
+        alert_data: Dict[str, Any],
+        recipient: Optional[str] = None,
+    ) -> bool:
         """Send the 2-minute activity summary email."""
         if not self.enabled:
             return False
@@ -388,21 +511,23 @@ class EmailService:
             timestamp        = alert_data.get("timestamp")
             severity         = (alert_data.get("severity") or "INFO").upper()
             camera_id        = alert_data.get("camera_id")
+            camera_name      = alert_data.get("camera_name")
             significance     = alert_data.get("significance")
             detected_objects = alert_data.get("detected_objects", [])
             frame_base64     = alert_data.get("frame_base64")
 
             sev = SEVERITY_STYLES.get(severity, SEVERITY_STYLES["INFO"])
             time_str = _format_timestamp(timestamp)
+            camera_label = camera_name if camera_name else (f"Camera {camera_id}" if camera_id is not None else None)
 
             meta_chips = _chip(
                 "Summary",
                 bg=THEME["bg_subtle"], fg=THEME["text_secondary"],
                 border=THEME["border"],
             )
-            if camera_id is not None:
+            if camera_label:
                 meta_chips += _chip(
-                    f"Camera {camera_id}",
+                    camera_label,
                     bg=THEME["bg_subtle"], fg=THEME["text_secondary"],
                     border=THEME["border"],
                 )
@@ -414,36 +539,33 @@ class EmailService:
                 )
 
             content_html = f"""
-            {_brand_header()}
-            <div style="padding:16px 28px 4px 28px;">
+            {_brand_header("Activity summary")}
+            <div style="padding:6px 28px 0 28px;">
               <div>{meta_chips}</div>
-              <h1 style="margin:12px 0 0 0;font-family:{FONT_STACK_DISPLAY};
-                         font-size:22px;font-weight:600;letter-spacing:-0.02em;
-                         color:{THEME['text_primary']};line-height:1.25;">
+              <h1 style="margin:14px 0 0 0;font-family:{FONT_STACK_DISPLAY};
+                         font-size:24px;font-weight:600;letter-spacing:-0.02em;
+                         color:{THEME['text_primary']};line-height:1.22;">
                 {title}
               </h1>
+              <div style="margin-top:6px;font-size:12.5px;color:{THEME['text_muted']};">
+                Generated {time_str} &nbsp;•&nbsp; 2-minute activity window
+              </div>
             </div>
-            <div style="padding:14px 28px 22px 28px;">
+            <div style="padding:14px 28px 24px 28px;">
               <p style="margin:14px 0 0 0;font-size:14.5px;line-height:1.65;
                         color:{THEME['text_secondary']};white-space:pre-line;">
                 {message}
               </p>
               {_object_chips(detected_objects)}
               {_evidence_image_html(bool(frame_base64), "Most significant frame")}
-              <div style="margin-top:22px;padding-top:14px;
-                          border-top:1px solid {THEME['border']};
-                          font-size:12px;color:{THEME['text_muted']};">
-                Generated <span style="color:{THEME['text_primary']};">{time_str}</span>
-                &nbsp;•&nbsp; 2-minute activity window
-              </div>
             </div>
             {_footer()}
             """
 
             html_body = _shell(content_html, severity_bar=sev["bar"])
             subject = f"[ThirdEye] {title}"
-            await self._send(subject, html_body, frame_base64)
-            logger.info(f"Summary email sent: {title}")
+            await self._send(subject, html_body, frame_base64, recipient=recipient)
+            logger.info(f"Summary email sent to {recipient or self.recipient_email}: {title}")
             return True
 
         except Exception as e:
