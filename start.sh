@@ -238,40 +238,67 @@ mkdir -p chromadb_data
 mkdir -p logs
 print_success "Directories ready"
 
-# Check if Docker is installed and running
+# Docker services: bring up postgres + redis and wait for readiness
 print_step "Checking Docker services..."
-if check_command docker; then
-    if docker ps > /dev/null 2>&1; then
-        print_success "Docker is running"
-
-        # Check if containers are running
-        if docker ps | grep -q "thirdeye_postgres"; then
-            print_success "PostgreSQL container is running"
-        else
-            print_step "Starting database containers (postgres + redis)..."
-            docker-compose up -d postgres redis > /dev/null 2>&1
-            if [ $? -eq 0 ]; then
-                print_success "Database containers started"
-                print_step "Waiting for PostgreSQL to be ready..."
-                sleep 5
-            else
-                print_warning "Failed to start database containers"
-                print_info "You may need to start them manually: docker-compose up -d postgres redis"
-            fi
-        fi
-    else
-        print_warning "Docker is not running"
-        print_info "Please start Docker Desktop or run: docker-compose up -d"
-    fi
-else
-    print_warning "Docker not found - skipping database checks"
+if ! check_command docker; then
+    print_error "Docker is required but not installed."
+    print_info "Install Docker Desktop: https://www.docker.com/products/docker-desktop/"
+    exit 1
 fi
+
+if ! docker info > /dev/null 2>&1; then
+    print_error "Docker is not running. Please start Docker Desktop and retry."
+    exit 1
+fi
+print_success "Docker is running"
+
+# Read Postgres host/port from backend/.env so checks match the backend's config
+PG_HOST=$(grep -E '^POSTGRES_HOST=' "$BACKEND_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+PG_PORT=$(grep -E '^POSTGRES_PORT=' "$BACKEND_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+PG_HOST=${PG_HOST:-127.0.0.1}
+PG_PORT=${PG_PORT:-5432}
+
+# Pick the right compose CLI (v2 plugin preferred, v1 fallback)
+if docker compose version > /dev/null 2>&1; then
+    COMPOSE="docker compose"
+elif check_command docker-compose; then
+    COMPOSE="docker-compose"
+else
+    print_error "Neither 'docker compose' nor 'docker-compose' is available."
+    exit 1
+fi
+
+# Idempotent bring-up: no-op if already running, starts/creates if not
+print_step "Starting database containers (postgres + redis)..."
+if ! (cd "$SCRIPT_DIR" && $COMPOSE up -d postgres redis > /dev/null 2>&1); then
+    print_error "Failed to start database containers."
+    print_info "Try manually: (cd $SCRIPT_DIR && $COMPOSE up -d postgres redis)"
+    exit 1
+fi
+print_success "Database containers up"
+
+# Wait for PostgreSQL to actually accept connections
+print_step "Waiting for PostgreSQL at ${PG_HOST}:${PG_PORT}..."
+attempt=0
+max_attempts=30
+until docker exec sentintinel_postgres pg_isready -h localhost -p 5432 > /dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    if [ $attempt -ge $max_attempts ]; then
+        echo ""
+        print_error "PostgreSQL did not become ready within ${max_attempts}s"
+        print_info "Check container logs: docker logs sentintinel_postgres"
+        exit 1
+    fi
+    sleep 1
+    echo -n "."
+done
+echo ""
+print_success "PostgreSQL ready at ${PG_HOST}:${PG_PORT}"
 
 # Initialize database tables (first time only)
 if [ ! -f "venv/.database_initialized" ]; then
     print_step "Initializing database tables..."
-    python -c "from database import init_db; init_db()" 2>/dev/null
-    if [ $? -eq 0 ]; then
+    if python -c "from database import init_db; init_db()"; then
         touch venv/.database_initialized
         print_success "Database tables created"
 

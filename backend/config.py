@@ -13,9 +13,15 @@ class Settings(BaseSettings):
     CLAUDE_API_KEY: str  # Anthropic Claude API key for reasoning agent
     GOOGLE_PROJECT_ID: Optional[str] = None
 
-    # Email Configuration (Gmail SMTP)
+    # Email Configuration (Gmail SMTP — legacy, unused)
     GMAIL_USER: str = "moneshrallapalli@gmail.com"
     GMAIL_APP_PASSWORD: str = ""
+
+    # Email Configuration (Resend — used for verification/welcome mail)
+    RESEND_API_KEY: str = ""
+    RESEND_FROM: str = "ThirdEye <onboarding@resend.dev>"
+    EMAIL_RECIPIENT: str = ""
+    FRONTEND_URL: str = "http://localhost:3000"
 
     # Database Configuration
     POSTGRES_HOST: str = "localhost"
@@ -78,6 +84,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 
 # Global settings instance
