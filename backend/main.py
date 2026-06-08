@@ -76,15 +76,21 @@ def _attach_pending_ai_commands_to_camera(camera_id: int) -> int:
     attached = 0
     db = SessionLocal()
     try:
+        from sqlalchemy import func as _sa_func
         for pending in pending_ai_commands:
+            pending_original = (pending.get("original_command") or "").strip()
+            if not pending_original:
+                continue
             # Skip if the same original command is already attached (e.g. the
-            # worker was restarted while DB rows still exist).
+            # worker was restarted while DB rows still exist). Match tolerantly
+            # so historical rows with trailing whitespace are treated as a
+            # match — prevents duplicate re-arming.
             existing = (
                 db.query(CameraTask)
                 .filter(
                     CameraTask.camera_id == camera_id,
                     CameraTask.source == "ai_command",
-                    CameraTask.original_command == pending.get("original_command"),
+                    _sa_func.trim(CameraTask.original_command) == pending_original,
                     CameraTask.is_active == True,  # noqa: E712
                 )
                 .first()
@@ -94,13 +100,13 @@ def _attach_pending_ai_commands_to_camera(camera_id: int) -> int:
 
             task_row = CameraTask(
                 camera_id=camera_id,
-                command=pending.get("command") or pending.get("original_command") or "",
+                command=(pending.get("command") or pending_original or "").strip(),
                 task_type=pending.get("task_type", "custom"),
                 is_default=False,
                 is_active=True,
                 priority=pending.get("priority", 2),
                 source="ai_command",
-                original_command=pending.get("original_command"),
+                original_command=pending_original,
             )
             db.add(task_row)
             attached += 1

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Camera } from '../types';
 import { taskApi } from '../services/api';
 import { utcToDate } from '../utils/time';
@@ -325,8 +325,8 @@ const LiveFeedGrid: React.FC<LiveFeedGridProps> = ({
   // List view
   return (
     <>
-      <div className="bg-white border border-stone-200 rounded-lg overflow-hidden">
-        <div className="hidden md:grid px-4 py-2.5 gap-4 border-b border-stone-100 bg-stone-50 text-[11px] font-medium text-stone-500 uppercase tracking-wide" style={{ gridTemplateColumns: '120px 1fr 120px 80px 200px' }}>
+      <div className="bg-white border border-stone-200 rounded-lg">
+        <div className="hidden md:grid px-4 py-2.5 gap-4 border-b border-stone-100 bg-stone-50 rounded-t-lg text-[11px] font-medium text-stone-500 uppercase tracking-wide" style={{ gridTemplateColumns: '120px 1fr 120px 80px 200px' }}>
           <div>Feed</div>
           <div>Camera</div>
           <div>Status</div>
@@ -472,6 +472,8 @@ interface OverflowMenuProps {
 
 const CameraOverflowMenu: React.FC<OverflowMenuProps> = ({ cameraId, isDeleting, onManageTasks, onDelete }) => {
   const [open, setOpen] = useState(false);
+  const [flipUp, setFlipUp] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -480,10 +482,20 @@ const CameraOverflowMenu: React.FC<OverflowMenuProps> = ({ cameraId, isDeleting,
     return () => window.removeEventListener('click', handler);
   }, [open]);
 
+  const handleToggle = () => {
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      setFlipUp(spaceBelow < 120);
+    }
+    setOpen((o) => !o);
+  };
+
   return (
     <div className="relative" onClick={(e) => e.stopPropagation()}>
       <button
-        onClick={() => setOpen((o) => !o)}
+        ref={btnRef}
+        onClick={handleToggle}
         disabled={isDeleting}
         className="p-1.5 text-stone-500 hover:text-stone-900 hover:bg-stone-100 rounded-md transition-colors"
         title="More"
@@ -502,7 +514,9 @@ const CameraOverflowMenu: React.FC<OverflowMenuProps> = ({ cameraId, isDeleting,
       </button>
       {open && (
         <div
-          className="absolute right-0 top-full mt-1 w-44 bg-white border border-stone-200 rounded-md shadow-lg z-20 overflow-hidden"
+          className={`absolute right-0 w-44 bg-white border border-stone-200 rounded-md shadow-lg z-50 overflow-hidden ${
+            flipUp ? 'bottom-full mb-1' : 'top-full mt-1'
+          }`}
           onClick={() => setOpen(false)}
         >
           {onManageTasks && (

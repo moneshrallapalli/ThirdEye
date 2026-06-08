@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 import sys
 import os
+import re
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -935,7 +936,7 @@ async def search_scenes(
       "limit": 50
     }
     """
-    from sqlalchemy import or_
+    from sqlalchemy import or_, and_
 
     query_text = (body.get("query") or "").strip()
     if not query_text:
@@ -956,6 +957,10 @@ async def search_scenes(
     user_tz = _resolve_tz(body.get("tz"))
     tz_label = str(user_tz) if user_tz else "UTC"
 
+    # Only keep semantic hits whose similarity clears this floor. Below this the
+    # embedding match is basically noise (stop-word overlap) and pollutes results.
+    SIMILARITY_FLOOR = 0.35
+
     # ── 1. ChromaDB semantic search (all cameras) ────────────────────────
     chroma_event_ids: set = set()
     chroma_scores: dict = {}  # event_id -> similarity (0–1, higher = better)
@@ -971,11 +976,15 @@ async def search_scenes(
             for match in similar:
                 meta = match.get("metadata", {})
                 eid = meta.get("event_id")
-                if eid is not None:
-                    eid = int(eid)
-                    chroma_event_ids.add(eid)
-                    dist = match.get("distance") or 1.0
-                    chroma_scores[eid] = round(max(0.0, 1.0 - float(dist)), 3)
+                if eid is None:
+                    continue
+                eid = int(eid)
+                dist = match.get("distance") or 1.0
+                sim = round(max(0.0, 1.0 - float(dist)), 3)
+                if sim < SIMILARITY_FLOOR:
+                    continue
+                chroma_event_ids.add(eid)
+                chroma_scores[eid] = sim
     except Exception as exc:
         logger.warning(f"ChromaDB search error (falling back to DB-only): {exc}")
 
@@ -987,18 +996,85 @@ async def search_scenes(
     if camera_ids_filter:
         base_q = base_q.filter(Event.camera_id.in_(camera_ids_filter))
 
-    search_term = f"%{query_text}%"
-    text_events = (
-        base_q.filter(
-            or_(
-                Event.scene_description.ilike(search_term),
-                Event.description.ilike(search_term),
+    # Tokenize into specific keywords. Two levels of stopwords:
+    #   _STOPWORDS       — grammar words (with, the, of, …)
+    #   _GENERIC_SUBJECTS — actor nouns that appear in nearly every surveillance
+    #                      description and therefore carry no discriminating
+    #                      signal ("man", "person", "people", …). Dropping these
+    #                      is what prevents "man with water bottle" from matching
+    #                      every event that merely mentions a man.
+    _STOPWORDS = {
+        "a", "an", "the", "and", "or", "but", "with", "without", "of", "in",
+        "on", "at", "to", "for", "is", "are", "was", "were", "be", "being",
+        "been", "by", "from", "that", "this", "these", "those", "it", "its",
+        "as", "near", "any", "some", "someone", "something", "has", "have",
+        "had", "into", "onto", "while",
+        # Conversational question words — common in natural-language queries
+        # like "did you find any thief today?" but meaningless for scene
+        # matching. Without these the search AND-joins grammar noise into the
+        # SQL and returns zero rows.
+        "did", "do", "does", "done", "can", "could", "will", "would", "shall",
+        "should", "may", "might", "what", "when", "where", "who", "whom",
+        "why", "how", "which", "find", "finds", "found", "show", "shows",
+        "see", "sees", "saw", "seen", "look", "looks", "looked", "spot",
+        "spotted", "detect", "detected", "notice", "noticed", "catch",
+        "caught", "you", "your", "yours", "me", "mine", "us", "our", "ours",
+        # Temporal words — redundant because the time range filter already
+        # narrows by timestamp.
+        "today", "yesterday", "tomorrow", "now", "recently", "ago", "before",
+        "after", "during", "since", "until", "till", "just",
+    }
+    _GENERIC_SUBJECTS = {
+        "man", "men", "woman", "women", "person", "people", "guy", "guys",
+        "lady", "ladies", "individual", "individuals", "someone", "somebody",
+        "human", "humans", "subject", "subjects", "scene",
+    }
+    tokens = [w for w in re.findall(r"[A-Za-z0-9]+", query_text.lower()) if len(w) > 2 and w not in _STOPWORDS]
+    specific_keywords = [w for w in tokens if w not in _GENERIC_SUBJECTS]
+    # If stripping generic subjects left nothing (e.g. query was literally
+    # "man"), fall back to the broader token list so we still return something.
+    keywords = specific_keywords or tokens
+
+    def _stem(word: str) -> str:
+        """Strip common English suffixes so "entering" matches "enter",
+        "entered", "entryway", etc. Prefix-matching via ILIKE `%stem%` is a
+        pragmatic middle ground between exact-word matching (which misses
+        morphological variants) and full embedding search (which already
+        runs separately via ChromaDB)."""
+        w = word
+        for suffix in ("ing", "ied", "ies", "ied", "ed", "es", "s"):
+            if len(w) > len(suffix) + 2 and w.endswith(suffix):
+                return w[: -len(suffix)]
+        return w
+
+    keywords = [_stem(k) for k in keywords]
+
+    text_events = []
+    if keywords:
+        # Match only against scene_description (the vision model's actual
+        # observation of the frame). Event.description stores the active AI
+        # command text — e.g. "alert me if you see a water bottle" — so every
+        # event captured while that command was armed would contain the query
+        # keywords verbatim, causing massive false positives.
+        #
+        # OR across keywords: return any scene that contains at least one
+        # specific keyword. This trades recall over precision — a strict AND
+        # returns nothing when the vision agent's word choice differs from the
+        # user's question (e.g. "thief" vs. scene-described "person"), while an
+        # OR gives Claude the actually-observed scenes to reason over.
+        per_keyword_clauses = [
+            Event.scene_description.ilike(f"%{kw}%")
+            for kw in keywords
+        ]
+        text_events = (
+            base_q.filter(
+                Event.scene_description.isnot(None),
+                or_(*per_keyword_clauses),
             )
+            .order_by(Event.timestamp.desc())
+            .limit(limit)
+            .all()
         )
-        .order_by(Event.timestamp.desc())
-        .limit(limit)
-        .all()
-    )
 
     # ── 3. Fetch DB rows for ChromaDB hits (filtered by time/camera) ─────
     chroma_db_events = []
@@ -1334,9 +1410,19 @@ async def list_ai_commands(db: Session = Depends(get_db)):
             "task_id": task.id,
         })
 
+    # A sticky command may live in both DB (armed on current cameras) and the
+    # pending queue (so future cameras inherit it). Hide the pending copy if
+    # the same original_command already appears as active — the UI only needs
+    # to show it once. It remains pending internally for future attachment.
+    active_originals = {g["original_command"] for g in groups.values()}
+    pending_view = [
+        p for p in main_module.pending_ai_commands
+        if p.get("original_command") not in active_originals
+    ]
+
     return {
         "active": list(groups.values()),
-        "pending": list(main_module.pending_ai_commands),
+        "pending": pending_view,
     }
 
 
@@ -1357,11 +1443,15 @@ async def cancel_ai_command(
     if not original:
         raise HTTPException(status_code=400, detail="original_command is required")
 
+    # Match tolerantly on trimmed text. Historical rows were stored with
+    # surrounding whitespace (the frontend trims before sending), so a naive
+    # equality check leaves them un-deletable.
+    from sqlalchemy import func
     deleted = (
         db.query(CameraTask)
         .filter(
             CameraTask.source == "ai_command",
-            CameraTask.original_command == original,
+            func.trim(CameraTask.original_command) == original,
         )
         .delete(synchronize_session=False)
     )
@@ -1370,7 +1460,7 @@ async def cancel_ai_command(
     before = len(main_module.pending_ai_commands)
     main_module.pending_ai_commands[:] = [
         p for p in main_module.pending_ai_commands
-        if p.get("original_command") != original
+        if (p.get("original_command") or "").strip() != original
     ]
     pending_removed = before - len(main_module.pending_ai_commands)
 
@@ -2023,7 +2113,10 @@ async def process_user_command(command: str, params: dict):
     """
     import main as main_module
 
-    original_command = command
+    # Strip surrounding whitespace so the stored `original_command` always
+    # matches what the frontend sends back on cancel — otherwise the WHERE
+    # clause in `cancel_ai_command` silently matches zero rows.
+    original_command = (command or "").strip()
     active_camera_ids: list[int] = list(camera_service.active_cameras.keys())
     context = {
         "active_cameras": active_camera_ids,
@@ -2179,9 +2272,28 @@ async def process_user_command(command: str, params: dict):
     armed = [r for r in results if r.get("status") in ("armed", "already_armed")]
     failed = [r for r in results if r.get("status") == "error"]
 
+    # Make the command "sticky": also append to the pending queue so any
+    # camera started *after* this point inherits it automatically. Without
+    # this, stopping the currently-armed cameras and starting a different
+    # one would drop the command silently. `_attach_pending_ai_commands_to_camera`
+    # is de-duped against existing DB rows, so no double-arming.
+    already_pending = any(
+        p.get("original_command") == original_command
+        for p in main_module.pending_ai_commands
+    )
+    if not already_pending:
+        main_module.pending_ai_commands.append({
+            "original_command": original_command,
+            "command": detection_target,
+            "task_type": task_type,
+            "priority": 2,
+            "queued_at": datetime.utcnow().isoformat(),
+        })
+
     logger.info(
         f"[AI-CMD] '{original_command}' → target='{detection_target}' "
-        f"armed={len(armed)}/{len(target_cameras)} failed={len(failed)}"
+        f"armed={len(armed)}/{len(target_cameras)} failed={len(failed)} "
+        f"sticky={not already_pending}"
     )
 
     await manager.send_system_message("command_processed", {

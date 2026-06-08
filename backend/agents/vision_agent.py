@@ -19,6 +19,34 @@ from config import settings
 from database.models import AlertSeverity
 
 
+# Keywords that flip the vision + reasoning agents into "aggressive surveillance
+# mode". Home-security intents — break-in, theft, intruder, etc. — should treat
+# any unknown person in frame as a potential match, not dismiss them as
+# "looks like the owner". Keep this list narrow: expand only when a specific
+# phrasing demonstrably gets dismissed by the model.
+_AGGRESSIVE_KEYWORDS = (
+    "break in", "break-in", "breaks in", "breaks into", "breaking in",
+    "intruder", "intrusion", "trespass", "burglar", "burglary", "robbery",
+    "theft", "stealing", "stolen",
+    "unauthorized", "unknown person", "stranger",
+    "someone enters", "someone entering", "someone breaks",
+    "suspicious activity", "suspicious person",
+)
+
+
+def _is_aggressive_surveillance(user_query: Optional[str]) -> bool:
+    """Return True when the query describes an intrusion/theft-style intent.
+
+    Matched case-insensitively on substring so compound OR-joined targets
+    from the command agent still trip (e.g. "unauthorized person entering
+    the house OR an object being removed ...").
+    """
+    if not user_query:
+        return False
+    q = user_query.lower()
+    return any(k in q for k in _AGGRESSIVE_KEYWORDS)
+
+
 class VisionAgent:
     """
     Vision Agent for real-time video analysis using Claude vision
@@ -104,6 +132,34 @@ IMPORTANT:
 - If a rule says "watch for fire" and you see flames/smoke → query_match=true
 - Be decisive. If the condition is clearly visible, set query_confidence >= 70.
 - Only set query_match=false if NONE of the rules apply to the current frame.
+"""
+                    if _is_aggressive_surveillance(user_query):
+                        prompt += """
+
+AGGRESSIVE HOME-SECURITY MODE (OVERRIDES ABOVE):
+This rule is an intrusion/theft watch. The camera owner is AWAY or wants to be
+notified about ANY human presence. Your job is to ALERT, not to reason about
+who belongs in the scene. Follow these rules strictly:
+
+1. If ANY person, silhouette, or body part is visible in the frame → set
+   query_match=true with query_confidence between 75 and 95.
+2. DO NOT reason "the person looks like a resident", "appears authorized",
+   "is in their own home", "seems legitimate", "is adjusting their own TV",
+   "is doing normal activity", or any similar softening. You CANNOT verify
+   who is authorized. The default is ALERT.
+3. DO NOT require forced entry, weapons, masks, or suspicious behavior. Mere
+   presence of a human when the owner is monitoring is enough.
+4. Also match on: objects being carried toward/out of the frame, drawers or
+   cabinets being opened, hands reaching for electronics/bags/valuables,
+   someone climbing through a window, flashlight beams in the dark.
+5. Only set query_match=false if the frame is EMPTY of humans AND shows no
+   object being removed. Empty room with no activity = query_match=false.
+6. If the frame is too dark / too blurry to tell, set query_match=true with
+   query_confidence=60 and say so in query_details — the owner would rather
+   see a false alarm than miss an intruder.
+
+Remember: under aggressive mode, the cost of a missed intruder is far higher
+than the cost of a false alarm. When in doubt, ALERT.
 """
                 elif previous_context and "BASELINE:" in previous_context:
                     prompt += f"""
