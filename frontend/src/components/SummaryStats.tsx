@@ -1,6 +1,3 @@
-/**
- * Summary statistics component
- */
 import React from 'react';
 import { SummaryStats as Stats } from '../types';
 
@@ -13,91 +10,51 @@ const SummaryStats: React.FC<SummaryStatsProps> = ({ stats }) => {
     return (
       <div className="card">
         <div className="card-header">
-          <h2 className="text-lg font-semibold">Daily Summary</h2>
+          <h2 className="text-base font-semibold text-stone-900">Statistics</h2>
         </div>
         <div className="card-body">
-          <div className="text-center text-gray-500 py-8">
-            <div className="animate-pulse">Loading statistics...</div>
-          </div>
+          <p className="text-sm text-stone-400 text-center py-6">Loading...</p>
         </div>
       </div>
     );
   }
 
-  const statItems = [
-    {
-      label: 'Total Events',
-      value: stats.total_events,
-      icon: '📊',
-      color: 'text-blue-400'
-    },
-    {
-      label: 'Critical Alerts',
-      value: stats.critical_alerts,
-      icon: '🚨',
-      color: 'text-red-400'
-    },
-    {
-      label: 'Warning Alerts',
-      value: stats.warning_alerts,
-      icon: '⚠️',
-      color: 'text-orange-400'
-    },
-    {
-      label: 'Info Alerts',
-      value: stats.info_alerts,
-      icon: 'ℹ️',
-      color: 'text-blue-300'
-    },
-    {
-      label: 'Avg Response Time',
-      value: `${stats.avg_response_time_seconds}s`,
-      icon: '⏱️',
-      color: 'text-green-400'
-    },
-    {
-      label: 'Active Cameras',
-      value: stats.active_cameras,
-      icon: '📹',
-      color: 'text-cyan-400'
-    }
+  const items = [
+    { label: 'Total Events', value: stats.total_events, color: 'text-stone-900' },
+    { label: 'Critical Alerts', value: stats.critical_alerts, color: 'text-red-600' },
+    { label: 'Warning Alerts', value: stats.warning_alerts, color: 'text-orange-600' },
+    { label: 'Info Alerts', value: stats.info_alerts, color: 'text-stone-700' },
+    { label: 'Avg Response', value: `${stats.avg_response_time_seconds}s`, color: 'text-stone-900' },
+    { label: 'Active Cameras', value: stats.active_cameras, color: 'text-stone-900' },
   ];
 
   return (
     <div className="card">
-      <div className="card-header">
-        <h2 className="text-lg font-semibold">Daily Summary</h2>
-        <p className="text-sm text-gray-400">Last {stats.period_hours} hours</p>
+      <div className="card-header flex items-center justify-between">
+        <h2 className="text-base font-semibold text-stone-900">Statistics</h2>
+        <span className="text-xs text-stone-400">Last {stats.period_hours}h</span>
       </div>
       <div className="card-body">
-        <div className="grid grid-cols-2 gap-4">
-          {statItems.map((item, index) => (
-            <div
-              key={index}
-              className="bg-dark-900/50 rounded-lg p-4 border border-dark-700 hover:border-dark-600 transition-colors"
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-2xl">{item.icon}</span>
-                <span className="text-xs text-gray-400">{item.label}</span>
-              </div>
-              <div className={`text-2xl font-bold ${item.color}`}>
-                {item.value}
-              </div>
+        <div className="grid grid-cols-2 gap-3">
+          {items.map((item) => (
+            <div key={item.label} className="bg-stone-50 rounded-lg p-3 border border-stone-100">
+              <p className="text-xs text-stone-500 mb-1">{item.label}</p>
+              <p className={`text-xl font-semibold ${item.color}`}>{item.value}</p>
             </div>
           ))}
         </div>
 
         {stats.context_stats && (
-          <div className="mt-4 pt-4 border-t border-dark-700">
-            <h3 className="text-sm font-semibold text-gray-300 mb-2">Context Database</h3>
+          <div className="mt-4 pt-4 border-t border-stone-100">
+            <p className="text-xs font-medium text-stone-700 mb-2">Context database</p>
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div className="flex justify-between">
-                <span className="text-gray-400">Stored Scenes:</span>
-                <span className="text-gray-200 font-semibold">{stats.context_stats.total_scenes}</span>
+                <span className="text-stone-500 text-xs">Stored scenes</span>
+                <span className="text-stone-900 text-xs font-medium">{stats.context_stats.total_scenes}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-gray-400">Patterns:</span>
-                <span className="text-gray-200 font-semibold">{stats.context_stats.total_patterns}</span>
+                <span className="text-stone-500 text-xs">Patterns</span>
+                <span className="text-stone-900 text-xs font-medium">{stats.context_stats.total_patterns}</span>
               </div>
             </div>
           </div>

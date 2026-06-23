@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ################################################################################
-# SentinTinel Surveillance System - Docker Stop Script
+# ThirdEye Surveillance System - Docker Stop Script
 # Stops all Docker containers
 ################################################################################
 
@@ -41,7 +41,7 @@ print_warning() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-print_header "🛑 Stopping SentinTinel Docker Containers"
+print_header "🛑 Stopping ThirdEye Docker Containers"
 
 # Determine Docker Compose command
 if command -v docker-compose &> /dev/null; then
@@ -101,7 +101,7 @@ fi
 # Summary
 ################################################################################
 
-print_header "✅ SentinTinel Stopped"
+print_header "✅ ThirdEye Stopped"
 
 echo ""
 print_message "$GREEN" "All containers have been stopped successfully"

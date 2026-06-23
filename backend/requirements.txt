@@ -23,7 +23,7 @@ google-cloud-aiplatform==1.38.1
 
 # Anthropic Claude for reasoning
 anthropic>=0.40.0
-resend>=0.8.0
+aiosmtplib>=3.0.0
 
 # Computer Vision
 opencv-python==4.8.1.78
@@ -34,6 +34,7 @@ numpy==1.26.2
 python-dotenv==1.0.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
+email-validator==2.1.0
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 aiofiles==23.2.1

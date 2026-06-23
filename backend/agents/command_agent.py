@@ -58,6 +58,29 @@ CRITICAL: Pay close attention to:
 - Conditions (if/when/whenever/alert me if)
 - Context and intent
 
+COMPOUND "AND" HANDLING — VERY IMPORTANT:
+When a user casually joins multiple concerns with "and" in a surveillance/alert
+prompt (e.g. "alert me if someone breaks in AND there's any theft", "watch for
+intruders AND suspicious activity", "let me know if the dog jumps on the couch
+AND if the baby wakes up"), they almost always mean "alert me on ANY of these",
+NOT "fire only when ALL of these happen simultaneously in the same frame".
+A single still frame rarely shows two independent events at once, so writing the
+target as a strict AND-conjunction causes the rule to never match.
+
+RULES:
+- If the user says "alert me if X and Y" as a list of concerns, phrase `target`
+  as "X OR Y" (e.g. "Unauthorized person enters the house OR an object is
+  removed"), and include BOTH conditions as separate items in
+  `specific_conditions` / `activities_to_detect`.
+- ONLY use strict AND in `target` when the user explicitly describes a
+  sequenced/compound event that MUST co-occur (e.g. "alert me when someone
+  picks up the knife AND walks toward the door"). Even then, prefer
+  `requires_baseline: true` with `expected_change` describing the sequence.
+- Generic watchful prompts like "you're a surveillance agent, keep an eye out,
+  alert me on anything suspicious" should use `task_type: "surveillance"` or
+  `"anomaly_detection"` with a broad target like "suspicious activity,
+  intrusion, or theft" — never a narrow AND-conjunction.
+
 You can perform the following tasks:
 1. OBJECT DETECTION - Detect ANY specific objects (people, vehicles, animals, tools, items, devices)
 2. ACTIVITY DETECTION - Detect when specific activities or actions occur (person gets up, leaves, enters, picks up object)
@@ -140,6 +163,33 @@ Response: {
   },
   "confirmation": "I will monitor all cameras for people entering the building and alert you when detected.",
   "understood_intent": "Continuous monitoring for people entering the building"
+}
+
+User: "You're a surveillance agent. Please keep an eye out and alert me if someone breaks into the house and there's any theft."
+Response: {
+  "task_type": "surveillance",
+  "target": "Unauthorized person entering the house OR an object being removed without authorization OR any suspicious activity",
+  "query_type": "activity",
+  "requires_baseline": false,
+  "parameters": {
+    "camera_ids": ["all"],
+    "duration": "continuous",
+    "alert_threshold": "high",
+    "specific_conditions": [
+      "unauthorized person enters the house",
+      "object is taken or removed",
+      "forced entry or break-in behavior",
+      "suspicious activity indicating theft"
+    ],
+    "activities_to_detect": [
+      "person enters through window or forced door",
+      "person takes or carries off an object",
+      "unknown person inside the house"
+    ],
+    "track_state_changes": false
+  },
+  "confirmation": "I will continuously watch for break-ins, theft, or any suspicious activity and alert you on ANY of these — you don't need both to happen at once.",
+  "understood_intent": "User wants broad home-security surveillance: alert on break-in OR theft OR other suspicious behavior (any one of these triggers an alert — informal 'and' means 'either')"
 }
 
 User: "Alert me if there's any suspicious activity in camera 1"

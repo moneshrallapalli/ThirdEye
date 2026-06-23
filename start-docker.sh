@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ################################################################################
-# SentinTinel Surveillance System - Docker Start Script
+# ThirdEye Surveillance System - Docker Start Script
 # Starts all services using Docker Compose
 ################################################################################
 
@@ -43,7 +43,7 @@ print_warning() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-print_header "🛡️  Starting SentinTinel with Docker"
+print_header "🛡️  Starting ThirdEye with Docker"
 
 ################################################################################
 # Check Prerequisites
@@ -138,7 +138,7 @@ print_header "Waiting for Services to Initialize"
 
 print_message "$YELLOW" "Waiting for PostgreSQL..."
 for i in {1..30}; do
-    if $COMPOSE_CMD exec -T postgres pg_isready -U sentintinel_user &> /dev/null; then
+    if $COMPOSE_CMD exec -T postgres pg_isready -U thirdeye_user &> /dev/null; then
         print_success "PostgreSQL is ready"
         break
     fi
@@ -186,7 +186,7 @@ print_success "Frontend should be ready"
 # Summary
 ################################################################################
 
-print_header "✅ SentinTinel Started Successfully!"
+print_header "✅ ThirdEye Started Successfully!"
 
 echo ""
 print_message "$GREEN" "Services Status:"

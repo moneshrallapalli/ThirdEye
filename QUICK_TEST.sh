@@ -11,7 +11,7 @@ echo "✅ Backend running: $(curl -s http://localhost:8000/health | grep -q heal
 echo "✅ Frontend running: $(curl -s http://localhost:3000 > /dev/null 2>&1 && echo 'YES ✓' || echo 'NO ✗')"
 echo ""
 echo "🧠 Claude Reasoning Agent:"
-grep "Reasoning Agent" /tmp/sentintinel_backend.log | tail -1
+grep "Reasoning Agent" /tmp/thirdeye_backend.log | tail -1
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "  📊 LIVE MONITORING - Press Ctrl+C to stop"
@@ -28,7 +28,7 @@ echo "Watching logs..."
 echo ""
 
 # Monitor key events
-tail -f /tmp/sentintinel_backend.log | grep --line-buffered -E "BASELINE|EMERGENCY|CLAUDE|query_confidence|FORCE|Camera.*started|query_match|person_present|ALERT TRIGGERED" | while read line; do
+tail -f /tmp/thirdeye_backend.log | grep --line-buffered -E "BASELINE|EMERGENCY|CLAUDE|query_confidence|FORCE|Camera.*started|query_match|person_present|ALERT TRIGGERED" | while read line; do
     # Color code different types of messages
     if echo "$line" | grep -q "BASELINE ESTABLISHED"; then
         echo "🎯 $line"

@@ -27,6 +27,22 @@ class DetectionStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
+class User(Base):
+    """User accounts for authentication"""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255))
+    is_active = Column(Boolean, default=False)  # False until email verified
+    is_verified = Column(Boolean, default=False)
+    verification_token = Column(String(255), nullable=True, index=True)
+    verification_token_expires = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login = Column(DateTime, nullable=True)
+
+
 class Camera(Base):
     """Camera configuration and metadata"""
     __tablename__ = "cameras"
@@ -45,6 +61,7 @@ class Camera(Base):
     # Relationships
     events = relationship("Event", back_populates="camera", cascade="all, delete-orphan")
     detections = relationship("Detection", back_populates="camera", cascade="all, delete-orphan")
+    tasks = relationship("CameraTask", back_populates="camera", cascade="all, delete-orphan")
 
 
 class Event(Base):
@@ -130,6 +147,32 @@ class ContextPattern(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+
+
+class CameraTask(Base):
+    """Persistent monitoring tasks assigned to cameras"""
+    __tablename__ = "camera_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="CASCADE"), nullable=False)
+    command = Column(Text, nullable=False)  # Detection target sent to vision/reasoning agents
+    task_type = Column(String(100))  # fire_detection, intrusion_detection, custom, etc.
+    is_default = Column(Boolean, default=False)  # True = auto-assigned from location preset
+    is_active = Column(Boolean, default=True)
+    priority = Column(Integer, default=1)  # Higher = more important
+
+    # Provenance. "manual" = set up from Cameras page; "ai_command" = issued
+    # from the Intelligence → AI Command panel (broadcast across live cameras).
+    source = Column(String(50), default="manual", nullable=False, index=True)
+    # When `source == "ai_command"` we keep the user's original natural-language
+    # instruction here so the UI can show what they typed even after the parser
+    # has normalised it into a short detection target.
+    original_command = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    camera = relationship("Camera", back_populates="tasks")
 
 
 class SystemLog(Base):

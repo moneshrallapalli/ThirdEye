@@ -23,7 +23,11 @@ class WebSocketService {
       return;
     }
 
-    const ws = new WebSocket(`${WS_BASE_URL}${endpoint}`);
+    // Get auth token from localStorage
+    const token = localStorage.getItem('auth_token');
+    const wsUrl = token ? `${WS_BASE_URL}${endpoint}?token=${token}` : `${WS_BASE_URL}${endpoint}`;
+
+    const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
       console.log(`WebSocket connected to ${endpoint}`);

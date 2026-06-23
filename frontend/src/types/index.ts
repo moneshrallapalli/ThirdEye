@@ -71,6 +71,15 @@ export interface Alert {
   frame_base64?: string;
   detections?: Detection[];
   detected_objects?: string[];
+  // Reasoning / provenance so the UI can explain *why* the alert fired
+  user_query?: string;
+  query_confidence?: number;
+  query_details?: string;
+  claude_reasoning?: string;
+  scene_description?: string;
+  activity?: string;
+  reasoning?: string;
+  alert_type?: string;
 }
 
 export interface LiveFeedUpdate {
@@ -111,6 +120,19 @@ export interface SummaryStats {
     total_scenes: number;
     total_patterns: number;
   };
+}
+
+export interface CameraTask {
+  id: number;
+  camera_id: number;
+  command: string;
+  task_type: string;
+  is_default: boolean;
+  is_active: boolean;
+  priority: number;
+  source?: 'manual' | 'ai_command' | string;
+  original_command?: string | null;
+  created_at?: string;
 }
 
 export interface WebSocketMessage {

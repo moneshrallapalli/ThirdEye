@@ -41,10 +41,8 @@ class ContextAgent:
             )
         )
 
-        # Use sentence-transformers for embeddings
-        self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
-        )
+        # Use ChromaDB's built-in embedding function (onnxruntime, no torch needed)
+        self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
 
         # Create or get collections
         self.scene_collection = self.client.get_or_create_collection(
@@ -125,10 +123,16 @@ class ContextAgent:
         if camera_id is not None:
             where_clause["camera_id"] = camera_id
 
+        # Cap n_results to collection size to avoid hnswlib errors
+        collection_count = self.scene_collection.count()
+        if collection_count == 0:
+            return []
+        actual_n = min(n_results, collection_count)
+
         # Query ChromaDB
         results = self.scene_collection.query(
             query_texts=[scene_description],
-            n_results=n_results,
+            n_results=actual_n,
             where=where_clause if where_clause else None
         )
 
@@ -167,10 +171,13 @@ class ContextAgent:
         start_time = timestamp - timedelta(minutes=lookback_minutes)
         end_time = timestamp + timedelta(minutes=lookback_minutes)
 
-        # Query events in time window
+        # Query events in time window (cap to collection size)
+        collection_count = self.scene_collection.count()
+        if collection_count == 0:
+            return {"before": [], "after": [], "total_events": 0}
         results = self.scene_collection.query(
             query_texts=["temporal context"],
-            n_results=50,
+            n_results=min(50, collection_count),
             where={
                 "camera_id": camera_id
             }
@@ -371,10 +378,13 @@ class ContextAgent:
         Returns:
             Historical appearances of this object
         """
-        # Search for similar objects
+        # Search for similar objects (cap to collection size)
+        collection_count = self.scene_collection.count()
+        if collection_count == 0:
+            return []
         results = self.scene_collection.query(
             query_texts=[f"{object_type}: {description}"],
-            n_results=20
+            n_results=min(20, collection_count)
         )
 
         # Filter to find same tracking ID or very similar descriptions

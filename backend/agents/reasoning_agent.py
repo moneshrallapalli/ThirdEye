@@ -12,6 +12,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import settings
+from agents.vision_agent import _is_aggressive_surveillance
 
 
 class ReasoningAgent:
@@ -62,6 +63,8 @@ class ReasoningAgent:
                 previous_observations or []
             )
             
+            aggressive = _is_aggressive_surveillance(user_query)
+
             # Create Claude prompt
             system_prompt = """You are an intelligent surveillance monitoring system that analyzes vision agent outputs to detect when specific user-requested events occur.
 
@@ -82,6 +85,27 @@ CRITICAL for "person leaves" queries:
 - Baseline: Person present
 - Current: No person visible
 - Conclusion: Person has LEFT → 95%+ confidence, IMMEDIATE ALERT"""
+
+            if aggressive:
+                system_prompt += """
+
+AGGRESSIVE HOME-SECURITY MODE (OVERRIDES EVERYTHING ABOVE):
+The user's query is about intrusion, theft, or unauthorized presence. You
+CANNOT verify who is authorized. Do NOT downgrade a match because the person
+"looks legitimate", "appears to be a resident", "is in their own home", or
+"is doing normal activity". The owner wants an alert for ANY human in frame.
+
+Under aggressive mode:
+- If the vision agent saw a person → should_alert=true, confidence 80+
+- If the vision agent saw an object being removed → should_alert=true,
+  confidence 85+
+- If the frame is dark/blurry but MIGHT contain a person → should_alert=true,
+  confidence 60, note the uncertainty in reasoning
+- Only should_alert=false when NO human and NO object removal is observed in
+  any of the recent observations.
+
+Cost model: a missed intruder is far worse than a false alarm. When in doubt,
+ALERT."""
 
             user_prompt = f"""Analyze this surveillance scenario and determine if the user's query has been satisfied.
 
@@ -120,7 +144,7 @@ CRITICAL: If user asked about "person leaving" and person was present but is now
             # Call Claude API
             response = await asyncio.to_thread(
                 self.client.messages.create,
-                model="claude-3-haiku-20240307",  # Claude 3 Haiku (fast and available)
+                model="claude-haiku-4-5-20251001",
                 max_tokens=2000,
                 temperature=0.3,  # Lower temp for more consistent reasoning
                 system=system_prompt,
@@ -135,7 +159,7 @@ CRITICAL: If user asked about "person leaving" and person was present but is now
             
             # Add metadata
             decision['timestamp'] = datetime.utcnow().isoformat()
-            decision['model_used'] = 'claude-3-5-sonnet'
+            decision['model_used'] = 'claude-haiku-4-5'
             
             return decision
             

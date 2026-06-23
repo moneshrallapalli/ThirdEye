@@ -1,315 +1,577 @@
 """
-Email notification service using Resend API
-Much simpler and more reliable than SMTP
+Email notification service using Gmail SMTP.
+
+The HTML mirrors the ThirdEye product theme: warm cream surface
+(#FAF9F7), warm-ink text (#1A1714), Space Grotesk display font, DM Sans
+body font, and muted severity chips matched to the in-app `.badge-*`
+classes.  All timestamps are rendered in the user's display timezone so
+they match what the operator sees in the UI.
 """
-import resend
-from typing import Dict, Any
-from datetime import datetime
+import aiosmtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
+from typing import Dict, Any, Optional
+from datetime import datetime, timezone
 from loguru import logger
 import sys
 import os
+import base64
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # Python < 3.9 fallback
+    ZoneInfo = None  # type: ignore
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import settings
+from services.brand_assets import render_thirdeye_logo_png
+
+
+# ─────────────────────────────────────────────────────────────
+# ThirdEye theme tokens (kept in sync with frontend/src/index.css)
+# ─────────────────────────────────────────────────────────────
+THEME = {
+    "bg_page":       "#FAF9F7",
+    "bg_surface":    "#FFFFFF",
+    "bg_subtle":     "#F2EFE9",
+    "border":        "#E8E3DB",
+    "border_strong": "#D5CEC4",
+    "text_primary":  "#1A1714",
+    "text_secondary": "#4A4340",
+    "text_muted":    "#8C837A",
+    "text_faint":    "#B5ADA6",
+    "ink_inverse":   "#FAF9F7",
+    "accent":        "#1A1714",
+}
+
+SEVERITY_STYLES = {
+    "CRITICAL": {
+        "bar":    "#F87171",
+        "text":   "#7C2D2D",
+        "bg":     "#FDF2F2",
+        "border": "#F0D0D0",
+        "label":  "Critical",
+    },
+    "WARNING": {
+        "bar":    "#FB923C",
+        "text":   "#78490A",
+        "bg":     "#FDFAF2",
+        "border": "#EDD9A3",
+        "label":  "Warning",
+    },
+    "INFO": {
+        "bar":    "#8C837A",
+        "text":   "#4A4340",
+        "bg":     "#F2EFE9",
+        "border": "#E8E3DB",
+        "label":  "Info",
+    },
+    "SYSTEM": {
+        "bar":    "#8C837A",
+        "text":   "#4A4340",
+        "bg":     "#F2EFE9",
+        "border": "#E8E3DB",
+        "label":  "System",
+    },
+}
+
+FONT_STACK_BODY = (
+    "'DM Sans','Helvetica Neue',Helvetica,Arial,sans-serif"
+)
+FONT_STACK_DISPLAY = (
+    "'Space Grotesk','DM Sans','Helvetica Neue',Helvetica,Arial,sans-serif"
+)
+
+
+def _display_tz():
+    """Resolve the configured display timezone or fall back to local."""
+    name = (getattr(settings, "DISPLAY_TIMEZONE", "") or "").strip()
+    if name and ZoneInfo is not None:
+        try:
+            return ZoneInfo(name)
+        except Exception as e:
+            logger.warning(f"Invalid DISPLAY_TIMEZONE '{name}': {e} — using local")
+    # Use the local machine timezone
+    return datetime.now().astimezone().tzinfo
+
+
+def _format_timestamp(raw: Optional[str]) -> str:
+    """Parse an ISO timestamp (assumed UTC if naive) and format in local TZ."""
+    try:
+        if not raw:
+            dt = datetime.now(timezone.utc)
+        else:
+            # `datetime.utcnow().isoformat()` produces a naive UTC string
+            # without a trailing Z — treat anything naive as UTC.
+            cleaned = raw.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(cleaned)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+
+        dt_local = dt.astimezone(_display_tz())
+        tz_abbr = dt_local.strftime("%Z") or ""
+        base = dt_local.strftime("%b %d, %Y • %I:%M %p").replace(" 0", " ")
+        return f"{base} {tz_abbr}".strip()
+    except Exception:
+        return datetime.now(_display_tz()).strftime("%b %d, %Y • %I:%M %p")
+
+
+def _chip(label: str, *, bg: str, fg: str, border: str) -> str:
+    return (
+        f'<span style="display:inline-block;padding:3px 10px;'
+        f'background:{bg};color:{fg};border:1px solid {border};'
+        f'border-radius:999px;font-size:11px;font-weight:500;'
+        f'letter-spacing:0.02em;margin-right:6px;">{label}</span>'
+    )
+
+
+def _object_chips(objects):
+    if not objects:
+        return ""
+    chips = "".join(
+        _chip(
+            str(obj),
+            bg=THEME["bg_subtle"],
+            fg=THEME["text_secondary"],
+            border=THEME["border"],
+        )
+        for obj in objects
+    )
+    return (
+        f'<div style="margin-top:14px;display:flex;flex-wrap:wrap;gap:4px;">{chips}</div>'
+    )
+
+
+def _evidence_image_html(has_image: bool, caption: str) -> str:
+    if not has_image:
+        return ""
+    return f"""
+    <div style="margin-top:22px;border:1px solid {THEME['border']};
+                border-radius:10px;overflow:hidden;background:{THEME['bg_subtle']};">
+        <img src="cid:camera_frame" alt="Evidence frame"
+             style="display:block;width:100%;max-height:420px;object-fit:contain;
+                    background:{THEME['bg_subtle']};" />
+        <div style="padding:8px 14px;background:{THEME['bg_subtle']};
+                    border-top:1px solid {THEME['border']};
+                    text-align:center;font-size:11px;color:{THEME['text_muted']};
+                    letter-spacing:0.04em;text-transform:uppercase;">
+            {caption}
+        </div>
+    </div>
+    """
+
+
+def _reason_row(label: str, value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return f"""
+    <div style="margin-top:14px;">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;
+                  color:{THEME['text_muted']};font-weight:600;margin-bottom:4px;">
+        {label}
+      </div>
+      <div style="font-size:14px;line-height:1.6;color:{THEME['text_secondary']};
+                  white-space:pre-line;">{value}</div>
+    </div>
+    """
+
+
+def _app_url(path: str = "/dashboard") -> str:
+    """Build a fully-qualified URL into the ThirdEye web app.
+
+    Defaults to ``/dashboard`` rather than ``/`` because the root route
+    performs an auth redirect that can stall the UI indefinitely when
+    the backend is unreachable — deep-linking skips that bounce and
+    lands authenticated users straight on the surveillance view (or the
+    login page via ProtectedRoute if they're signed out).
+    """
+    base = (getattr(settings, "APP_PUBLIC_URL", "") or "").strip()
+    if not base:
+        base = "http://localhost:3000"
+    base = base.rstrip("/")
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{base}{path}"
+
+
+def _brand_header(eyebrow: str) -> str:
+    """ThirdEye header: real eye-mark PNG + wordmark + severity eyebrow.
+
+    Email clients strip ``display:flex`` in many places (Outlook, parts of
+    Gmail web), so we rely on a single-row table with valign=middle for
+    vertical alignment. The logo is referenced by CID and attached by
+    ``EmailService._send``.
+    """
+    return f"""
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+           width="100%" style="padding:24px 28px 8px 28px;">
+      <tr>
+        <td valign="middle" width="56" style="width:56px;padding:0 14px 0 0;">
+          <img src="cid:thirdeye_logo"
+               alt="ThirdEye"
+               width="56" height="42"
+               style="display:block;width:56px;height:42px;border:0;outline:none;" />
+        </td>
+        <td valign="middle">
+          <div style="font-family:{FONT_STACK_DISPLAY};font-weight:700;
+                      font-size:17px;letter-spacing:-0.02em;line-height:1.1;
+                      color:{THEME['text_primary']};">
+            ThirdEye
+          </div>
+          <div style="margin-top:2px;font-size:11px;letter-spacing:0.08em;
+                      text-transform:uppercase;color:{THEME['text_muted']};
+                      font-weight:500;">
+            {eyebrow}
+          </div>
+        </td>
+        <td valign="middle" align="right" style="text-align:right;">
+          <a href="{_app_url()}"
+             style="display:inline-block;padding:8px 14px;border-radius:8px;
+                    background:{THEME['text_primary']};color:{THEME['ink_inverse']};
+                    text-decoration:none;font-size:12px;font-weight:600;
+                    letter-spacing:0.01em;">
+            Open ThirdEye →
+          </a>
+        </td>
+      </tr>
+    </table>
+    """
+
+
+def _footer() -> str:
+    return f"""
+    <div style="padding:20px 28px;background:{THEME['bg_subtle']};
+                border-top:1px solid {THEME['border']};
+                text-align:center;font-size:11px;color:{THEME['text_muted']};
+                letter-spacing:0.02em;line-height:1.55;">
+      <div style="font-weight:600;color:{THEME['text_secondary']};
+                  letter-spacing:0.08em;text-transform:uppercase;
+                  font-size:10px;">ThirdEye</div>
+      <div style="margin-top:4px;">AI-powered intelligent monitoring</div>
+      <div style="margin-top:10px;color:{THEME['text_faint']};">
+        You are receiving this alert because it matched an active monitoring
+        trigger on your account.
+      </div>
+    </div>
+    """
+
+
+def _shell(inner_html: str, severity_bar: str) -> str:
+    """Outer email shell with warm cream background.
+
+    Uses a table-based outer container (Outlook-friendly) wrapping a
+    rounded white card. A thin colored rail at the top encodes severity
+    without relying on emoji or special fonts.
+    """
+    return f"""<!DOCTYPE html>
+<html><head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ThirdEye alert</title>
+</head>
+<body style="margin:0;padding:0;background:{THEME['bg_page']};
+             font-family:{FONT_STACK_BODY};color:{THEME['text_primary']};
+             line-height:1.55;-webkit-font-smoothing:antialiased;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+         width="100%" bgcolor="{THEME['bg_page']}"
+         style="background:{THEME['bg_page']};padding:28px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0"
+               width="620" style="max-width:620px;width:100%;
+               background:{THEME['bg_surface']};
+               border:1px solid {THEME['border']};border-radius:16px;
+               overflow:hidden;box-shadow:0 1px 3px rgba(26,23,20,0.06);">
+          <tr><td style="height:3px;background:{severity_bar};font-size:0;line-height:0;">&nbsp;</td></tr>
+          <tr><td>{inner_html}</td></tr>
+        </table>
+        <div style="max-width:620px;margin:12px auto 0 auto;
+                    font-size:11px;color:{THEME['text_faint']};text-align:center;">
+          Secured inbox • ThirdEye Intelligent Monitoring
+        </div>
+      </td>
+    </tr>
+  </table>
+</body></html>
+"""
 
 
 class EmailService:
-    """Service for sending email notifications using Resend"""
-    
+    """Service for sending email notifications using Gmail SMTP"""
+
     def __init__(self):
-        """Initialize Resend email service"""
-        self.resend_api_key = settings.RESEND_API_KEY if hasattr(settings, 'RESEND_API_KEY') else None
-        self.sender_email = "ThirdEye Monitoring <onboarding@resend.dev>"  # Free tier default
-        self.recipient_email = settings.EMAIL_RECIPIENT
-        
-        # Check if email is configured
-        self.enabled = bool(self.resend_api_key)
-        
+        self.gmail_user = settings.GMAIL_USER
+        self.gmail_password = settings.GMAIL_APP_PASSWORD
+        self.recipient_email = settings.GMAIL_USER
+        self.enabled = bool(self.gmail_user and self.gmail_password)
+
         if not self.enabled:
-            logger.warning("⚠️ Email notifications disabled - RESEND_API_KEY not configured in .env")
+            logger.warning("Email notifications disabled - GMAIL_USER or GMAIL_APP_PASSWORD not configured")
         else:
-            resend.api_key = self.resend_api_key
-            logger.info(f"📧 Resend email service initialized - will send to {self.recipient_email}")
-    
+            logger.info(f"Gmail SMTP email service initialized - alerts will send to {self.recipient_email}")
+
+    async def _send(
+        self,
+        subject: str,
+        html_body: str,
+        frame_base64: Optional[str] = None,
+        recipient: Optional[str] = None,
+    ) -> bool:
+        """Send a multipart email with the ThirdEye logo attached inline.
+
+        The logo is always attached via CID so the header in every email
+        renders the same eye-mark the user sees in the web UI, regardless
+        of the client's SVG/remote-image policies.
+        """
+        to_addr = (recipient or self.recipient_email).strip()
+
+        message = MIMEMultipart("related")
+        message["Subject"] = subject
+        message["From"] = f"ThirdEye <{self.gmail_user}>"
+        message["To"] = to_addr
+
+        html_part = MIMEMultipart("alternative")
+        # Plain-text fallback — stripped-down subject line. Keeps spam
+        # filters happier and readers in terminal mail clients sane.
+        text_fallback = (
+            f"{subject}\n\n"
+            "View this alert in ThirdEye. Your email client is showing the"
+            " text-only fallback because HTML is disabled."
+        )
+        html_part.attach(MIMEText(text_fallback, "plain"))
+        html_part.attach(MIMEText(html_body, "html"))
+        message.attach(html_part)
+
+        # Always attach the brand mark — header references cid:thirdeye_logo.
+        try:
+            logo_bytes = render_thirdeye_logo_png(width=180, height=134)
+            logo_img = MIMEImage(logo_bytes, _subtype="png")
+            logo_img.add_header("Content-ID", "<thirdeye_logo>")
+            logo_img.add_header("Content-Disposition", "inline", filename="thirdeye-logo.png")
+            message.attach(logo_img)
+        except Exception as e:
+            logger.warning(f"Could not attach brand logo: {e}")
+
+        if frame_base64:
+            try:
+                image_data = base64.b64decode(frame_base64)
+                image = MIMEImage(image_data, _subtype="jpeg")
+                image.add_header("Content-ID", "<camera_frame>")
+                image.add_header("Content-Disposition", "inline", filename="camera_frame.jpg")
+                message.attach(image)
+            except Exception as e:
+                logger.warning(f"Could not attach camera frame: {e}")
+
+        await aiosmtplib.send(
+            message,
+            hostname="smtp.gmail.com",
+            port=587,
+            start_tls=True,
+            username=self.gmail_user,
+            password=self.gmail_password,
+        )
+        return True
+
+    # ────────────────────────────────────────────
+    # Public senders
+    # ────────────────────────────────────────────
+
     async def send_critical_alert(
         self,
-        alert_data: Dict[str, Any]
+        alert_data: Dict[str, Any],
+        recipient: Optional[str] = None,
     ) -> bool:
-        """
-        Send critical alert email using the exact same format as the frontend UI
+        """Send a trigger-matched alert email.
 
         Args:
-            alert_data: The complete alert data dict sent to frontend
-
-        Returns:
-            bool: True if email sent successfully
+            alert_data: Rich alert payload (same shape persisted in
+                ``Alert.alert_metadata``).
+            recipient: Override the default self-notification recipient.
+                Used by ``POST /api/email/test-alert`` so a developer can
+                verify layout by mailing their own account.
         """
         if not self.enabled:
-            logger.debug("Email service not enabled, skipping critical alert email")
             return False
 
         try:
-            # Extract data from alert (same structure as frontend receives)
-            title = alert_data.get('title', 'Critical Alert')
-            message = alert_data.get('message', '')
-            camera_id = alert_data.get('camera_id', 0)
-            timestamp = alert_data.get('timestamp', datetime.now().isoformat())
-            severity = alert_data.get('severity', 'CRITICAL')
-            significance = alert_data.get('significance')
-            query_confidence = alert_data.get('query_confidence')
-            detected_objects = alert_data.get('detected_objects', [])
-            frame_base64 = alert_data.get('frame_base64')
+            title            = alert_data.get("title", "Trigger matched")
+            message          = alert_data.get("message", "")
+            camera_id        = alert_data.get("camera_id")
+            camera_name      = alert_data.get("camera_name")
+            timestamp        = alert_data.get("timestamp")
+            severity         = (alert_data.get("severity") or "CRITICAL").upper()
+            significance     = alert_data.get("significance")
+            query_confidence = alert_data.get("query_confidence")
+            detected_objects = alert_data.get("detected_objects", [])
+            frame_base64     = alert_data.get("frame_base64")
+            user_query       = alert_data.get("user_query")
+            query_details    = alert_data.get("query_details")
+            claude_reasoning = alert_data.get("claude_reasoning")
+            scene_description = alert_data.get("scene_description")
+            activity         = alert_data.get("activity")
 
-            # Use query_confidence if available, otherwise use significance
             confidence = query_confidence if query_confidence is not None else significance
+            sev = SEVERITY_STYLES.get(severity, SEVERITY_STYLES["INFO"])
+            time_str = _format_timestamp(timestamp)
 
-            # Parse timestamp for display
-            try:
-                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                time_str = dt.strftime('%B %d, %Y at %I:%M %p')
-            except:
-                time_str = datetime.now().strftime('%B %d, %Y at %I:%M %p')
+            camera_label = camera_name if camera_name else (f"Camera {camera_id}" if camera_id is not None else None)
 
-            # Determine severity emoji and color
-            severity_emoji = '🚨' if severity == 'CRITICAL' else '⚠️' if severity == 'WARNING' else 'ℹ️'
-            severity_color = '#dc3545' if severity == 'CRITICAL' else '#fd7e14' if severity == 'WARNING' else '#17a2b8'
+            severity_chip = _chip(
+                sev["label"],
+                bg=sev["bg"], fg=sev["text"], border=sev["border"],
+            )
+            meta_chips = severity_chip
+            if camera_label:
+                meta_chips += _chip(
+                    camera_label,
+                    bg=THEME["bg_subtle"], fg=THEME["text_secondary"],
+                    border=THEME["border"],
+                )
+            if confidence is not None:
+                meta_chips += _chip(
+                    f"{int(confidence)}% confidence",
+                    bg=THEME["bg_subtle"], fg=THEME["text_secondary"],
+                    border=THEME["border"],
+                )
 
-            # Build detected objects HTML badges
-            detected_objects_html = ''
-            if detected_objects:
-                badges = [f'<span style="display: inline-block; padding: 4px 12px; background: rgba(34, 197, 94, 0.2); color: #22c55e; border-radius: 12px; font-size: 12px; margin: 4px 4px 4px 0; border: 1px solid rgba(34, 197, 94, 0.3);">{obj}</span>'
-                         for obj in detected_objects]
-                detected_objects_html = f'<div style="margin-top: 16px;">{" ".join(badges)}</div>'
-
-            # Build image HTML using CID reference for attachment (more reliable than data URI)
-            image_html = ''
-            if frame_base64:
-                image_html = f"""
-                <div style="margin-top: 20px; border-radius: 8px; overflow: hidden; border: 1px solid #374151; background: #111827;">
-                    <img src="cid:camera_frame" alt="Event Frame" style="width: 100%; max-height: 400px; object-fit: contain; display: block;" />
-                    <div style="padding: 8px; background: #1f2937; text-align: center; font-size: 12px; color: #9ca3af;">
-                        📷 Supporting Evidence
-                    </div>
+            trigger_row = ""
+            if user_query:
+                trigger_row = f"""
+                <div style="margin-top:14px;padding:12px 14px;
+                            background:{THEME['bg_subtle']};
+                            border:1px solid {THEME['border']};
+                            border-radius:10px;">
+                  <div style="font-size:10px;text-transform:uppercase;
+                              letter-spacing:0.1em;font-weight:600;
+                              color:{THEME['text_muted']};">
+                    Triggered by your rule
+                  </div>
+                  <div style="margin-top:4px;font-size:14px;
+                              color:{THEME['text_primary']};font-weight:500;
+                              white-space:pre-line;">
+                    {user_query}
+                  </div>
                 </div>
                 """
 
-            # Build HTML body - exact match to UI display format
-            html_body = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <style>
-                    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #e5e7eb; background: #0f172a; margin: 0; padding: 20px; }}
-                    .container {{ max-width: 600px; margin: 0 auto; background: #1e293b; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); border-left: 4px solid {severity_color}; }}
-                    .header {{ padding: 20px 24px; border-bottom: 1px solid #334155; }}
-                    .severity-badge {{ display: inline-block; padding: 4px 12px; background: {severity_color}33; color: {severity_color}; border-radius: 4px; font-size: 12px; font-weight: 600; margin-bottom: 8px; }}
-                    .meta-badges {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }}
-                    .confidence-badge {{ display: inline-block; padding: 4px 10px; background: rgba(59, 130, 246, 0.3); color: #60a5fa; border-radius: 4px; font-size: 11px; }}
-                    .camera-badge {{ display: inline-block; font-size: 12px; color: #9ca3af; }}
-                    .title {{ margin: 0; font-size: 18px; font-weight: 600; color: #f3f4f6; }}
-                    .content {{ padding: 20px 24px; }}
-                    .message {{ font-size: 14px; line-height: 1.7; color: #d1d5db; white-space: pre-line; margin: 0; }}
-                    .meta {{ margin-top: 20px; padding-top: 16px; border-top: 1px solid #334155; color: #9ca3af; font-size: 13px; }}
-                    .meta-item {{ margin: 6px 0; }}
-                    .footer {{ padding: 16px 24px; background: #0f172a; border-radius: 0 0 8px 8px; text-align: center; color: #6b7280; font-size: 12px; border-top: 1px solid #334155; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <div class="meta-badges">
-                            <span class="severity-badge">{severity_emoji} {severity}</span>
-                            <span class="camera-badge">Camera {camera_id}</span>
-                            {f'<span class="confidence-badge">{int(confidence)}% confidence</span>' if confidence is not None else ''}
-                        </div>
-                        <h1 class="title">{title}</h1>
-                    </div>
-                    <div class="content">
-                        <div class="message">{message}</div>
-                        {detected_objects_html}
-                        {image_html}
-                        <div class="meta">
-                            <div class="meta-item">🕐 <strong>Time:</strong> {time_str}</div>
-                        </div>
-                    </div>
-                    <div class="footer">
-                        ThirdEye - AI-Powered Intelligent Monitoring System
-                    </div>
-                </div>
-            </body>
-            </html>
+            content_html = f"""
+            {_brand_header(f"{sev['label']} alert")}
+            <div style="padding:6px 28px 0 28px;">
+              <div>{meta_chips}</div>
+              <h1 style="margin:14px 0 0 0;font-family:{FONT_STACK_DISPLAY};
+                         font-size:24px;font-weight:600;letter-spacing:-0.02em;
+                         color:{THEME['text_primary']};line-height:1.22;">
+                {title}
+              </h1>
+              <div style="margin-top:6px;font-size:12.5px;color:{THEME['text_muted']};
+                          letter-spacing:0.01em;">
+                Captured {time_str}
+              </div>
+              {trigger_row}
+            </div>
+            <div style="padding:14px 28px 24px 28px;">
+              <p style="margin:14px 0 0 0;font-size:14.5px;line-height:1.65;
+                        color:{THEME['text_secondary']};white-space:pre-line;">
+                {message}
+              </p>
+              {_reason_row("Match evidence", query_details)}
+              {_reason_row("Model reasoning", claude_reasoning)}
+              {_reason_row("Scene", scene_description)}
+              {_reason_row("Activity", activity)}
+              {_object_chips(detected_objects)}
+              {_evidence_image_html(bool(frame_base64), "Frame analysed by the model")}
+            </div>
+            {_footer()}
             """
 
-            # Prepare email parameters
-            params = {
-                "from": self.sender_email,
-                "to": [self.recipient_email],
-                "subject": f"{severity_emoji} {severity}: {title}",
-                "html": html_body
-            }
-
-            # Add image as attachment if available (CID reference for inline display)
-            if frame_base64:
-                import base64
-                params["attachments"] = [{
-                    "filename": "camera_frame.jpg",
-                    "content": frame_base64,  # Resend accepts base64 string directly
-                    "content_id": "camera_frame"  # This matches cid:camera_frame in HTML
-                }]
-
-            response = resend.Emails.send(params)
-
-            logger.info(f"✅ Critical alert email sent to {self.recipient_email}: {title}")
+            html_body = _shell(content_html, severity_bar=sev["bar"])
+            subject = f"[ThirdEye • {sev['label']}] {title}"
+            await self._send(subject, html_body, frame_base64, recipient=recipient)
+            logger.info(f"Critical alert email sent to {recipient or self.recipient_email}: {title}")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to send critical alert email: {e}")
+            logger.error(f"Failed to send critical alert email: {e}")
             return False
-    
+
     async def send_summary_email(
         self,
-        alert_data: Dict[str, Any]
+        alert_data: Dict[str, Any],
+        recipient: Optional[str] = None,
     ) -> bool:
-        """
-        Send 2-minute summary email using the exact same format as the frontend UI
-
-        Args:
-            alert_data: The complete alert data dict sent to frontend
-
-        Returns:
-            bool: True if email sent successfully
-        """
+        """Send the 2-minute activity summary email."""
         if not self.enabled:
-            logger.debug("Email service not enabled, skipping summary email")
             return False
 
         try:
-            # Extract data from alert (same structure as frontend receives)
-            title = alert_data.get('title', 'Activity Summary')
-            message = alert_data.get('message', '')
-            timestamp = alert_data.get('timestamp', datetime.now().isoformat())
-            severity = alert_data.get('severity', 'INFO')
-            camera_id = alert_data.get('camera_id')
-            significance = alert_data.get('significance')
-            detected_objects = alert_data.get('detected_objects', [])
-            frame_base64 = alert_data.get('frame_base64')
+            title            = alert_data.get("title", "Activity summary")
+            message          = alert_data.get("message", "")
+            timestamp        = alert_data.get("timestamp")
+            severity         = (alert_data.get("severity") or "INFO").upper()
+            camera_id        = alert_data.get("camera_id")
+            camera_name      = alert_data.get("camera_name")
+            significance     = alert_data.get("significance")
+            detected_objects = alert_data.get("detected_objects", [])
+            frame_base64     = alert_data.get("frame_base64")
 
-            # Parse timestamp for display
-            try:
-                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                time_str = dt.strftime('%B %d, %Y at %I:%M %p')
-            except:
-                time_str = datetime.now().strftime('%B %d, %Y at %I:%M %p')
+            sev = SEVERITY_STYLES.get(severity, SEVERITY_STYLES["INFO"])
+            time_str = _format_timestamp(timestamp)
+            camera_label = camera_name if camera_name else (f"Camera {camera_id}" if camera_id is not None else None)
 
-            # Determine severity emoji and color (summaries are typically INFO/WARNING)
-            severity_emoji = '📊' if severity == 'INFO' else '⚠️' if severity == 'WARNING' else '🚨'
-            severity_color = '#17a2b8' if severity == 'INFO' else '#fd7e14' if severity == 'WARNING' else '#dc3545'
-
-            # Build detected objects HTML badges
-            detected_objects_html = ''
-            if detected_objects:
-                badges = [f'<span style="display: inline-block; padding: 4px 12px; background: rgba(34, 197, 94, 0.2); color: #22c55e; border-radius: 12px; font-size: 12px; margin: 4px 4px 4px 0; border: 1px solid rgba(34, 197, 94, 0.3);">{obj}</span>'
-                         for obj in detected_objects]
-                detected_objects_html = f'<div style="margin-top: 16px;">{" ".join(badges)}</div>'
-
-            # Build image HTML using CID reference for attachment (more reliable than data URI)
-            image_html = ''
-            if frame_base64:
-                image_html = f"""
-                <div style="margin-top: 20px; border-radius: 8px; overflow: hidden; border: 1px solid #374151; background: #111827;">
-                    <img src="cid:camera_frame" alt="Event Frame" style="width: 100%; max-height: 400px; object-fit: contain; display: block;" />
-                    <div style="padding: 8px; background: #1f2937; text-align: center; font-size: 12px; color: #9ca3af;">
-                        📷 Most Significant Frame
-                    </div>
-                </div>
-                """
-
-            # Build camera and confidence badges
-            extra_badges = ''
-            if camera_id is not None:
-                extra_badges += f'<span class="camera-badge">Camera {camera_id}</span>'
+            meta_chips = _chip(
+                "Summary",
+                bg=THEME["bg_subtle"], fg=THEME["text_secondary"],
+                border=THEME["border"],
+            )
+            if camera_label:
+                meta_chips += _chip(
+                    camera_label,
+                    bg=THEME["bg_subtle"], fg=THEME["text_secondary"],
+                    border=THEME["border"],
+                )
             if significance is not None:
-                extra_badges += f'<span class="confidence-badge">{int(significance)}% confidence</span>'
+                meta_chips += _chip(
+                    f"{int(significance)}% peak",
+                    bg=THEME["bg_subtle"], fg=THEME["text_secondary"],
+                    border=THEME["border"],
+                )
 
-            # Build HTML body - exact match to UI display format
-            html_body = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <style>
-                    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #e5e7eb; background: #0f172a; margin: 0; padding: 20px; }}
-                    .container {{ max-width: 600px; margin: 0 auto; background: #1e293b; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); border-left: 4px solid {severity_color}; }}
-                    .header {{ padding: 20px 24px; border-bottom: 1px solid #334155; }}
-                    .severity-badge {{ display: inline-block; padding: 4px 12px; background: {severity_color}33; color: {severity_color}; border-radius: 4px; font-size: 12px; font-weight: 600; margin-bottom: 8px; }}
-                    .meta-badges {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }}
-                    .confidence-badge {{ display: inline-block; padding: 4px 10px; background: rgba(59, 130, 246, 0.3); color: #60a5fa; border-radius: 4px; font-size: 11px; margin-left: 8px; }}
-                    .camera-badge {{ display: inline-block; font-size: 12px; color: #9ca3af; }}
-                    .title {{ margin: 0; font-size: 18px; font-weight: 600; color: #f3f4f6; }}
-                    .content {{ padding: 20px 24px; }}
-                    .message {{ font-size: 14px; line-height: 1.7; color: #d1d5db; white-space: pre-line; margin: 0; }}
-                    .meta {{ margin-top: 20px; padding-top: 16px; border-top: 1px solid #334155; color: #9ca3af; font-size: 13px; }}
-                    .meta-item {{ margin: 6px 0; }}
-                    .footer {{ padding: 16px 24px; background: #0f172a; border-radius: 0 0 8px 8px; text-align: center; color: #6b7280; font-size: 12px; border-top: 1px solid #334155; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <div class="meta-badges">
-                            <span class="severity-badge">{severity_emoji} Activity Summary</span>
-                            {extra_badges}
-                        </div>
-                        <h1 class="title">{title}</h1>
-                    </div>
-                    <div class="content">
-                        <div class="message">{message}</div>
-                        {detected_objects_html}
-                        {image_html}
-                        <div class="meta">
-                            <div class="meta-item">🕐 <strong>Generated:</strong> {time_str}</div>
-                            <div class="meta-item">📊 <strong>Type:</strong> 2-Minute Activity Summary</div>
-                        </div>
-                    </div>
-                    <div class="footer">
-                        ThirdEye - AI-Powered Intelligent Monitoring System
-                    </div>
-                </div>
-            </body>
-            </html>
+            content_html = f"""
+            {_brand_header("Activity summary")}
+            <div style="padding:6px 28px 0 28px;">
+              <div>{meta_chips}</div>
+              <h1 style="margin:14px 0 0 0;font-family:{FONT_STACK_DISPLAY};
+                         font-size:24px;font-weight:600;letter-spacing:-0.02em;
+                         color:{THEME['text_primary']};line-height:1.22;">
+                {title}
+              </h1>
+              <div style="margin-top:6px;font-size:12.5px;color:{THEME['text_muted']};">
+                Generated {time_str} &nbsp;•&nbsp; 2-minute activity window
+              </div>
+            </div>
+            <div style="padding:14px 28px 24px 28px;">
+              <p style="margin:14px 0 0 0;font-size:14.5px;line-height:1.65;
+                        color:{THEME['text_secondary']};white-space:pre-line;">
+                {message}
+              </p>
+              {_object_chips(detected_objects)}
+              {_evidence_image_html(bool(frame_base64), "Most significant frame")}
+            </div>
+            {_footer()}
             """
 
-            # Prepare email parameters
-            params = {
-                "from": self.sender_email,
-                "to": [self.recipient_email],
-                "subject": f"{severity_emoji} {title}",
-                "html": html_body
-            }
-
-            # Add image as attachment if available (CID reference for inline display)
-            if frame_base64:
-                import base64
-                params["attachments"] = [{
-                    "filename": "camera_frame.jpg",
-                    "content": frame_base64,  # Resend accepts base64 string directly
-                    "content_id": "camera_frame"  # This matches cid:camera_frame in HTML
-                }]
-
-            response = resend.Emails.send(params)
-
-            logger.info(f"✅ Summary email sent to {self.recipient_email}: {title}")
+            html_body = _shell(content_html, severity_bar=sev["bar"])
+            subject = f"[ThirdEye] {title}"
+            await self._send(subject, html_body, frame_base64, recipient=recipient)
+            logger.info(f"Summary email sent to {recipient or self.recipient_email}: {title}")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to send summary email: {e}")
+            logger.error(f"Failed to send summary email: {e}")
             return False
 
 
 # Global email service instance
 email_service = EmailService()
-
